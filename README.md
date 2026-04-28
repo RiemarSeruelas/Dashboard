@@ -1,16 +1,167 @@
-# React + Vite
+# Emergency Accountability Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+## Requirements
 
-Currently, two official plugins are available:
+Install the following first:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Node.js (includes npm)
+- PostgreSQL access (database credentials required)
+- Git (optional)
 
-## React Compiler
+---
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+# Setup
 
-## Expanding the ESLint configuration
+## 1 Install Dependencies
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Open terminal in the project folder:
+
+```bash
+npm install
+```
+
+---
+
+## 2 Configure Environment File
+
+Copy:
+
+```bash
+.env.example
+```
+
+Create:
+
+```bash
+.env
+```
+
+Update database settings:
+
+```env
+PORT=5000
+DB_HOST=your_server
+DB_PORT=5432
+DB_NAME=your_database
+DB_USER=your_user
+DB_PASSWORD=your_password
+```
+
+---
+
+## 3 Build Application
+
+```bash
+npm run build
+```
+
+---
+
+## 4 Start Application
+
+```bash
+npm start
+```
+
+Application runs at:
+
+```txt
+http://localhost:5000
+```
+
+---
+
+# How to Use
+
+## Login
+Open the application and enter the passcode.
+
+---
+
+## Personnel Page
+Use to:
+- View current personnel
+- Search employees
+- Filter by department
+- Monitor personnel count
+
+---
+
+## Start Emergency
+Press **Start** to begin emergency accountability.
+
+System captures current personnel snapshot.
+
+---
+
+## Rescue / Accountability
+Use to:
+- Mark personnel Safe
+- View remaining Not Safe personnel
+- Track accountability progress
+
+---
+
+## Analytics
+View:
+- Total tracked
+- Safe count
+- Not Safe count
+- Emergency summary
+
+---
+
+## History
+Use to:
+- View past emergency sessions
+- Open session details
+- Export records to Excel
+
+---
+
+## Stop Emergency
+Press **Stop** to close and save the session.
+
+---
+
+## Logout
+Press Logout to return to passcode page.
+
+---
+
+# Typical Startup
+
+```bash
+npm start
+```
+
+If frontend changes were made:
+
+```bash
+npm run build
+npm start
+```
+
+---
+
+# Troubleshooting
+
+## Cannot find package express
+
+Run:
+
+```bash
+npm install
+```
+
+## Cannot GET /passcode
+
+Run:
+
+```bash
+npm run build
+npm start
+```
+
+## Database connection error
+Verify `.env` credentials and PostgreSQL access.
