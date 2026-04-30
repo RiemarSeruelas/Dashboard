@@ -182,7 +182,7 @@ export const useDashboardStore = create((set, get) => ({
     set({ statusLoading: true });
 
     try {
-      const res = await fetch("http://localhost:5000/api/emergency-status");
+      const res = await fetch("/api/emergency-status");
       const data = await parseJsonResponse(res);
 
       const isActive = !!data?.emergencyActive;
@@ -210,7 +210,7 @@ export const useDashboardStore = create((set, get) => ({
 
       if (shouldSyncMustering) {
         const syncRes = await fetch(
-          "http://localhost:5000/api/emergency/sync-mustering",
+          "/api/emergency/sync-mustering",
           { method: "POST" }
         );
         await parseJsonResponse(syncRes);
@@ -233,7 +233,7 @@ export const useDashboardStore = create((set, get) => ({
   set({ emergencyActionLoading: true });
 
   try {
-    const res = await fetch("http://localhost:5000/api/emergency/start", {
+    const res = await fetch("/api/emergency/start", {
       method: "POST",
     });
 
@@ -264,7 +264,7 @@ clearEmergency: async () => {
   set({ emergencyActionLoading: true });
 
   try {
-    const res = await fetch("http://localhost:5000/api/emergency/stop", {
+    const res = await fetch("/api/emergency/stop", {
       method: "POST",
     });
 
@@ -290,7 +290,7 @@ clearEmergency: async () => {
 
   clearEmergency: async () => {
     try {
-      const res = await fetch("http://localhost:5000/api/emergency/stop", {
+      const res = await fetch("/api/emergency/stop", {
         method: "POST",
       });
       await parseJsonResponse(res);
@@ -347,7 +347,7 @@ clearEmergency: async () => {
     try {
       const endpoint = isEmergency
         ? buildPagingUrl(
-            "http://localhost:5000/api/emergency-accountability",
+            "/api/emergency-accountability",
             0,
             PAGE_SIZE,
             {
@@ -356,7 +356,7 @@ clearEmergency: async () => {
             }
           )
         : buildPagingUrl(
-            "http://localhost:5000/api/hikvision-normal",
+            "/api/hikvision-normal",
             0,
             PAGE_SIZE,
             {
@@ -417,7 +417,7 @@ clearEmergency: async () => {
 
       const endpoint = emergencyActive
         ? buildPagingUrl(
-            "http://localhost:5000/api/emergency-accountability",
+            "/api/emergency-accountability",
             personnelOffset,
             PAGE_SIZE,
             {
@@ -426,7 +426,7 @@ clearEmergency: async () => {
             }
           )
         : buildPagingUrl(
-            "http://localhost:5000/api/hikvision-normal",
+            "/api/hikvision-normal",
             personnelOffset,
             PAGE_SIZE,
             {
@@ -524,7 +524,7 @@ clearEmergency: async () => {
   }));
 
   try {
-    const res = await fetch("http://localhost:5000/api/emergency/update-status", {
+    const res = await fetch("/api/emergency/update-status", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -552,7 +552,7 @@ clearEmergency: async () => {
   fetchSessionDetails: async (sessionId) => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/emergency/history/${sessionId}`
+        `/api/emergency/history/${sessionId}`
       );
       const rows = await parseJsonResponse(res);
 
@@ -576,7 +576,7 @@ clearEmergency: async () => {
 
     try {
       const res = await fetch(
-        buildPagingUrl("http://localhost:5000/api/emergency/history", 0)
+        buildPagingUrl("/api/emergency/history", 0)
       );
       const data = await parseJsonResponse(res);
 
@@ -630,7 +630,7 @@ clearEmergency: async () => {
 
     try {
       const res = await fetch(
-        buildPagingUrl("http://localhost:5000/api/emergency/history", historyOffset)
+        buildPagingUrl("/api/emergency/history", historyOffset)
       );
       const data = await parseJsonResponse(res);
 
@@ -671,7 +671,7 @@ clearEmergency: async () => {
   fetchAnalytics: async (sessionId) => {
     try {
       const res = await fetch(
-        `http://localhost:5000/api/emergency/analytics/${sessionId}`
+        `/api/emergency/analytics/${sessionId}`
       );
       const rows = await parseJsonResponse(res);
 
@@ -692,8 +692,8 @@ clearEmergency: async () => {
     const queryString = params.toString();
 
     const url = queryString
-      ? `http://localhost:5000/api/rescue-team?${queryString}`
-      : "http://localhost:5000/api/rescue-team";
+      ? `/api/rescue-team?${queryString}`
+      : "/api/rescue-team";
 
     const res = await fetch(url);
     const rows = await parseJsonResponse(res);
@@ -726,7 +726,7 @@ clearEmergency: async () => {
 
   addRescuePersonnel: async (personData) => {
     try {
-      const res = await fetch("http://localhost:5000/api/rescue-team", {
+      const res = await fetch("/api/rescue-team", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -743,7 +743,7 @@ clearEmergency: async () => {
 
   updateRescuePersonnel: async (id, updates) => {
     try {
-      const res = await fetch(`http://localhost:5000/api/rescue-team/${id}`, {
+      const res = await fetch(`/api/rescue-team/${id}`, {
         method: "PUT",
         headers: {
           "Content-Type": "application/json",
@@ -760,7 +760,7 @@ clearEmergency: async () => {
 
   removeRescuePersonnel: async (id) => {
     try {
-      const res = await fetch(`http://localhost:5000/api/rescue-team/${id}`, {
+      const res = await fetch(`/api/rescue-team/${id}`, {
         method: "DELETE",
       });
 
