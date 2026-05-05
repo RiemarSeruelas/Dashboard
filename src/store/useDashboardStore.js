@@ -682,17 +682,14 @@ clearEmergency: async () => {
     }
   },
 
-  fetchRescuePersonnel: async ({ search = "", role = "ALL" } = {}) => {
+  fetchRescuePersonnel: async ({ search = "" } = {}) => {
   try {
     const params = new URLSearchParams();
 
     if (search) params.append("search", search);
-    if (role && role !== "ALL") params.append("role", role);
 
-    const queryString = params.toString();
-
-    const url = queryString
-      ? `/api/rescue-team?${queryString}`
+    const url = params.toString()
+      ? `/api/rescue-team?${params.toString()}`
       : "/api/rescue-team";
 
     const res = await fetch(url);
@@ -703,17 +700,14 @@ clearEmergency: async () => {
           id: row.id,
           personKey: `rescue|${row.id}`,
           name: row.name ?? "Unknown",
-          dept: row.dept ?? "EMERGENCY",
+          dept: row.dept ?? "Unknown Department",
           role: row.role ?? "Responder",
-          status: "RESCUE",
+          status: "INSIDE",
           isRescue: true,
           phone: row.phone ?? "",
-          email: row.email ?? "",
-          img: row.img ?? "",
-          time: row.time_in && row.time_out ? "" : "08:00A",
-          timeIn: row.time_in ?? "08:00",
-          timeOut: row.time_out ?? "17:00",
-          ltid: null,
+          inside: !!row.inside,
+          lastMode: row.last_mode ?? "",
+          lastTime: row.last_time ?? "",
         }))
       : [];
 

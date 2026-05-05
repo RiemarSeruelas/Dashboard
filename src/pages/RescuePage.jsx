@@ -15,17 +15,7 @@ const ROLE_OPTIONS = [
   "Security",
 ];
 
-const EMPTY_FORM = {
-  name: "",
-  role: "Incident Commander",
-  dept: "EMERGENCY",
-  phone: "",
-  email: "",
-  time: "08:00A",
-  timeIn: "08:00",
-  timeOut: "17:00",
-  img: "",
-};
+const DEFAULT_ROLE = "Incident Commander";
 
 export default function RescuePage() {
   const rescuePersonnel = useDashboardStore((s) => s.rescuePersonnel) ?? [];
@@ -33,434 +23,377 @@ export default function RescuePage() {
   const addRescuePersonnel = useDashboardStore((s) => s.addRescuePersonnel);
   const removeRescuePersonnel = useDashboardStore((s) => s.removeRescuePersonnel);
   const updateRescuePersonnel = useDashboardStore((s) => s.updateRescuePersonnel);
+
   const emergencyActive = useDashboardStore((s) => s.emergencyActive);
   const triggerEmergency = useDashboardStore((s) => s.triggerEmergency);
   const clearEmergency = useDashboardStore((s) => s.clearEmergency);
   const emergencyActionLoading = useDashboardStore((s) => s.emergencyActionLoading);
 
-  const [showForm, setShowForm] = useState(false);
-  const [editingId, setEditingId] = useState(null);
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [searchInput, setSearchInput] = useState("");
+  const [phoneInput, setPhoneInput] = useState("");
+  const [selectedRole, setSelectedRole] = useState(DEFAULT_ROLE);
+  const [dbResults, setDbResults] = useState([]);
+  const [selectedName, setSelectedName] = useState("");
+  const [selectedDept, setSelectedDept] = useState("");
+  const [loadingSearch, setLoadingSearch] = useState(false);
+  const [roleFilter, setRoleFilter] = useState("ALL");
+
   const [selectedPerson, setSelectedPerson] = useState(null);
-  const [formData, setFormData] = useState(EMPTY_FORM);
-  const [rescueSearch, setRescueSearch] = useState("");
-  const [rescueDept, setRescueDept] = useState("ALL");
-  const [rescueRole, setRescueRole] = useState("ALL");
-  
-  
+  const [editPhone, setEditPhone] = useState("");
+  const [editRole, setEditRole] = useState(DEFAULT_ROLE);
+
+  const [listSearch, setListSearch] = useState("");
+
   useEffect(() => {
     fetchRescuePersonnel?.();
   }, [fetchRescuePersonnel]);
 
-  const handleRescueSearch = (e) => {
-  const term = e.target.value;
-  setRescueSearch(term);
+  useEffect(() => {
+    const trimmed = searchInput.trim();
 
-  clearTimeout(window.rescueSearchTimeout);
-  window.rescueSearchTimeout = setTimeout(() => {
-    fetchRescuePersonnel?.({ search: term, role: rescueRole });
-  }, 300);
-};
-
-const handleRescueRoleChange = (e) => {
-  const role = e.target.value;
-  setRescueRole(role);
-  fetchRescuePersonnel?.({ search: rescueSearch, role });
-};
-
-  const rescueTeam = useMemo(() => {
-    return Array.isArray(rescuePersonnel) ? rescuePersonnel : [];
-  }, [rescuePersonnel]);
-
-  const hasMedicalSupport = rescueTeam.some((p) => {
-    const role = String(p.role || "").toLowerCase();
-    return (
-      role.includes("medical") ||
-      role.includes("medic") ||
-      role.includes("first aid") ||
-      role.includes("aid") ||
-      role.includes("nurse") ||
-      role.includes("doctor") ||
-      role.includes("first aider")
-    );
-  });
-
-  const hasEvacSupport = rescueTeam.some((p) => {
-    const role = String(p.role || "").toLowerCase();
-    return (
-      role.includes("evac") ||
-      role.includes("marshal") ||
-      role.includes("warden") ||
-      role.includes("rescue") ||
-      role.includes("safety") ||
-      role.includes("captain") ||
-      role.includes("commander")
-    );
-  });
-
-  const contactCount = rescueTeam.filter((p) => p.phone || p.email).length;
-
-  const resetForm = () => {
-    setFormData(EMPTY_FORM);
-    setEditingId(null);
-    setShowForm(false);
-  };
-
-  const openAddForm = () => {
-    setEditingId(null);
-    setFormData(EMPTY_FORM);
-    setShowForm(true);
-  };
-
-  const handleAddPerson = async (e) => {
-    e.preventDefault();
-
-    if (!formData.name?.trim() || !formData.role?.trim()) return;
-
-    const payload = {
-      ...formData,
-      name: formData.name.trim(),
-      role: formData.role.trim(),
-      dept: formData.dept?.trim() || "EMERGENCY",
-      phone: formData.phone?.trim() || "",
-      email: formData.email?.trim() || "",
-    };
-
-    if (editingId) {
-      await updateRescuePersonnel(editingId, payload);
-    } else {
-      await addRescuePersonnel(payload);
+    if (selectedName || trimmed.length < 3) {
+      setDbResults([]);
+      return;
     }
 
-    resetForm();
+    const timer = setTimeout(async () => {
+      try {
+        setLoadingSearch(true);
+
+        const res = await fetch(
+          `/api/personnel-search?search=${encodeURIComponent(trimmed)}`
+        );
+
+        const data = await res.json();
+        setDbResults(Array.isArray(data) ? data : []);
+      } catch (err) {
+        console.error("❌ PERSONNEL SEARCH ERROR:", err);
+        setDbResults([]);
+      } finally {
+        setLoadingSearch(false);
+      }
+    }, 400);
+
+    return () => clearTimeout(timer);
+  }, [searchInput, selectedName]);
+
+    const rescueTeam = useMemo(() => {
+    const rows = Array.isArray(rescuePersonnel) ? rescuePersonnel : [];
+    const search = listSearch.trim().toLowerCase();
+
+     return rows.filter((p) => {
+       const nameOk =
+       !search || String(p.name || "").toLowerCase().includes(search);
+
+       const roleOk =
+        roleFilter === "ALL" || String(p.role || "") === roleFilter;
+
+      return nameOk && roleOk;
+  });
+}, [rescuePersonnel, listSearch, roleFilter]);
+
+  const clearAddForm = () => {
+    setSearchInput("");
+    setPhoneInput("");
+    setSelectedRole(DEFAULT_ROLE);
+    setSelectedName("");
+    setSelectedDept("");
+    setDbResults([]);
+    setLoadingSearch(false);
   };
 
-  const handleInputChange = (e) => {
-    const { name, value } = e.target;
-
-    setFormData((prev) => ({
-      ...prev,
-      [name]: value,
-    }));
+  const closeAddModal = () => {
+    clearAddForm();
+    setShowAddModal(false);
   };
 
-  const handleImageChange = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleSelectDbPerson = (person) => {
+    const name = person?.Person || "";
+    const dept = person?.PersonGroup || "";
 
-    const reader = new FileReader();
-
-    reader.onloadend = () => {
-      setFormData((prev) => ({
-        ...prev,
-        img: reader.result,
-      }));
-    };
-
-    reader.readAsDataURL(file);
+    setSelectedName(name);
+    setSelectedDept(dept);
+    setSearchInput(name);
+    setDbResults([]);
   };
 
-  const handleEditPerson = (person) => {
-    setFormData({
-      name: person?.name ?? "",
-      role: person?.role ?? "Incident Commander",
-      dept: person?.dept ?? "EMERGENCY",
-      phone: person?.phone ?? "",
-      email: person?.email ?? "",
-      time: person?.time ?? "08:00A",
-      timeIn: person?.timeIn ?? "08:00",
-      timeOut: person?.timeOut ?? "17:00",
-      img: person?.img ?? "",
+  const handleAddRescue = async (e) => {
+    e.preventDefault();
+
+    if (!selectedName.trim()) return;
+
+    await addRescuePersonnel?.({
+      name: selectedName.trim(),
+      dept: selectedDept || "EMERGENCY",
+      role: selectedRole,
+      phone: phoneInput.trim(),
     });
 
-    setEditingId(person?.id ?? null);
-    setShowForm(true);
+    closeAddModal();
+    await fetchRescuePersonnel?.();
   };
 
   const handleOpenDetails = (person) => {
     setSelectedPerson(person);
+    setEditPhone(person?.phone || "");
+    setEditRole(person?.role || DEFAULT_ROLE);
   };
 
   const handleCloseDetails = () => {
     setSelectedPerson(null);
+    setEditPhone("");
+    setEditRole(DEFAULT_ROLE);
+  };
+
+  const handleUpdatePerson = async () => {
+    if (!selectedPerson?.id) return;
+
+    await updateRescuePersonnel?.(selectedPerson.id, {
+      phone: editPhone.trim(),
+      role: editRole,
+    });
+
+    handleCloseDetails();
+    await fetchRescuePersonnel?.();
+  };
+
+  const handleRemove = async () => {
+    if (!selectedPerson?.id) return;
+
+    await removeRescuePersonnel?.(selectedPerson.id);
+    handleCloseDetails();
+    await fetchRescuePersonnel?.();
   };
 
   return (
     <AppShell
-      title="Emergency Response Team"
-      subtitle="Authorized rescue and medical support personnel"
+      title="Rescue Team"
+      subtitle="Only selected rescue personnel currently inside the company are shown"
       summaryStats={[
-        { value: rescueTeam.length, label: "TEAM SIZE" },
-        { value: "DB", label: "STORAGE", variant: "amber" },
-        { value: "24/7", label: "COVERAGE" },
+        { value: rescueTeam.length, label: "INSIDE RESPONDERS" },
+        {
+          value: emergencyActive ? "ACTIVE" : "NORMAL",
+          label: "STATE",
+          variant: "amber",
+        },
       ]}
       actionSlot={
-  <button
-    className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
-    disabled={emergencyActionLoading}
-    style={{
-      opacity: emergencyActionLoading ? 0.65 : 1,
-      cursor: emergencyActionLoading ? "wait" : "pointer",
-    }}
-    onClick={() => {
-      if (emergencyActionLoading) return;
-
-      if (emergencyActive) {
-        clearEmergency?.();
-      } else {
-        triggerEmergency?.();
+        <button
+          className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
+          disabled={emergencyActionLoading}
+          style={{
+            opacity: emergencyActionLoading ? 0.65 : 1,
+            cursor: emergencyActionLoading ? "wait" : "pointer",
+          }}
+          onClick={() => {
+            if (emergencyActionLoading) return;
+            emergencyActive ? clearEmergency?.() : triggerEmergency?.();
+          }}
+        >
+          {emergencyActionLoading
+            ? "Loading..."
+            : emergencyActive
+            ? "Stop"
+            : "Start"}
+        </button>
       }
-    }}
-  >
-    {emergencyActionLoading
-      ? "Loading..."
-      : emergencyActive
-      ? "Stop"
-      : "Start"}
-  </button>
-}
     >
       <aside className="panel left-panel">
-        <div className="panel-title">Rescue Protocol</div>
+        <div className="panel-title">Rescue Setup</div>
 
         <div className="mini-info-text">
-          Rescue personnel are manually maintained and stored separately from
-          normal accountability.
+          Add names from the personnel database. Only selected people currently
+          inside will appear in the rescue list.
         </div>
 
-        <div className="mini-info-card">
-          <div className="mini-info-title">Team Administration</div>
-
-          <button className="primary-action-btn" onClick={openAddForm}>
-            + Add Personnel
-          </button>
-        </div>
+        <button
+          className="primary-action-btn"
+          onClick={() => setShowAddModal(true)}
+        >
+          + Add Rescue Personnel
+        </button>
       </aside>
 
       <section className="panel center-panel">
-        <div className="rescue-search-bar">
-          <input
-            type="text"
-            className="styled-input rescue-search-input"
-            placeholder="Search by name..."
-            value={rescueSearch}
-            onChange={handleRescueSearch}
-          />
+        <div className="table-card">
+          <div className="table-title">Inside Rescue Personnel</div>
 
-          <select
-  className="styled-input rescue-dept-select"
-  value={rescueRole}
-  onChange={handleRescueRoleChange}
->
-  <option value="ALL">All Departments</option>
+          <div className="rescue-list-toolbar">
+  <input
+    className="styled-input"
+    value={listSearch}
+    onChange={(e) => setListSearch(e.target.value)}
+    placeholder="Search rescue names..."
+  />
 
-  <option value="Incident Commander">
-    Incident Commander
-  </option>
+  <select
+    className="styled-input"
+    value={roleFilter}
+    onChange={(e) => setRoleFilter(e.target.value)}
+  >
+    <option value="ALL">All Roles</option>
+    {ROLE_OPTIONS.map((role) => (
+      <option key={role} value={role}>
+        {role}
+      </option>
+    ))}
+  </select>
+</div>
 
-  <option value="Safety Officer">
-    Safety Officer
-  </option>
+          <div className="rescue-grid">
+            {rescueTeam.length > 0 ? (
+              rescueTeam.map((person) => (
+                <div
+                  className="rescue-card"
+                  key={person.id}
+                  onClick={() => handleOpenDetails(person)}
+                >
+                  <div className="rescue-card-row">
+                    <div className="rescue-inside-dot" title="Inside" />
 
-  <option value="Emergency Captain">
-    Emergency Captain
-  </option>
+                    <div>
+                      <div className="rescue-name">{person.name}</div>
 
-  <option value="Area Marshal">
-    Area Marshal
-  </option>
+                      <div className="rescue-meta-row">
+                        <span className="rescue-badge">
+                          {person.role}
+                        </span>
 
-  <option value="Fire Brigade Dressing">
-    Fire Brigade Dressing
-  </option>
+                        <span className="status-chip done">INSIDE</span>
+                      </div>
 
-  <option value="Fire Brigade Savoury">
-    Fire Brigade Savoury
-  </option>
-
-  <option value="First Aider">
-    First Aider
-  </option>
-
-  <option value="Search & Rescue">
-    Search & Rescue
-  </option>
-
-  <option value="Environment">
-    Environment
-  </option>
-
-  <option value="Security">
-    Security
-  </option>
-</select>
-        </div>
-
-        <div className="rescue-grid">
-          {rescueTeam.length > 0 ? (
-            rescueTeam.map((person) => (
-              <div
-                className="rescue-card"
-                key={person.id}
-                onClick={() => handleOpenDetails(person)}
-              >
-                <div className="rescue-card-row">
-                  <img
-                    src={person.img || "/default-avatar.jpg"}
-                    alt={person.name}
-                    className="rescue-avatar"
-                  />
-
-                  <div>
-                    <div className="rescue-name">{person.name}</div>
-
-                    <div className="rescue-meta-row">
-                      <span className="rescue-badge">{person.dept}</span>
-
-                      <span className="rescue-time-chip">
-                        {person.timeIn && person.timeOut
-                          ? `${person.timeIn} - ${person.timeOut}`
-                          : person.time}
-                      </span>
-                    </div>
-
-                    <div className="rescue-role">{person.role}</div>
-
-                    <div className="rescue-contact">
-                      {person.email || person.phone || "No contact info"}
+                      <div className="rescue-contact">
+                        {person.phone || "No phone number"}
+                      </div>
                     </div>
                   </div>
                 </div>
-
-                <div className="rescue-actions">
-                  <button
-                    className="circle-action-btn edit-btn"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEditPerson(person);
-                    }}
-                    title="Edit"
-                  >
-                    ✏️
-                  </button>
-
-                  <button
-                    className="circle-action-btn"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-
-                      await removeRescuePersonnel(person.id);
-
-                      if (selectedPerson?.id === person.id) {
-                        setSelectedPerson(null);
-                      }
-                    }}
-                    style={{ background: "#ef4444" }}
-                    title="Remove"
-                  >
-                    ✕
-                  </button>
+              ))
+            ) : (
+              <div className="metric-card">
+                <div className="metric-label">No rescue personnel inside</div>
+                <div className="metric-value">
+                  Add names from the left panel, then they will appear here when
+                  currently inside.
                 </div>
               </div>
-            ))
-          ) : (
-            <div className="metric-card">
-              <div className="metric-label">No rescue members yet</div>
-              <div className="metric-value">
-                Add your response team from the left panel
-              </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       </section>
 
       <aside className="panel right-panel">
-        <div className="panel-title">Deployment Status</div>
+        <div className="panel-title">Rescue Status</div>
 
         <div className="metric-stack">
           <div className="metric-card">
-            <div className="metric-label">Active Responders</div>
+            <div className="metric-label">Visible Responders</div>
             <div className="metric-value safe-text">{rescueTeam.length}</div>
           </div>
 
-          <div className="metric-card">
-            <div className="metric-label">Medical Support</div>
-            <div
-              className={`metric-value ${
-                hasMedicalSupport ? "safe-text" : "warn-text"
-              }`}
-            >
-              {hasMedicalSupport ? "Ready" : "No Medic"}
-            </div>
-          </div>
+          <div className="mini-info-card">
+            <div className="mini-info-title">Inside Building</div>
 
-          <div className="metric-card">
-            <div className="metric-label">Evac Support</div>
-            <div
-              className={`metric-value ${
-                hasEvacSupport ? "safe-text" : "warn-text"
-              }`}
-            >
-              {hasEvacSupport ? "Ready" : "Missing"}
-            </div>
-          </div>
-
-          <div className="metric-card">
-            <div className="metric-label">With Contact Details</div>
-            <div
-              className={`metric-value ${
-                rescueTeam.length > 0 && contactCount === rescueTeam.length
-                  ? "safe-text"
-                  : "warn-text"
-              }`}
-            >
-              {contactCount}/{rescueTeam.length}
+            <div className="rescue-name-list">
+              {rescueTeam.length > 0 ? (
+                rescueTeam.map((person) => (
+                  <div className="rescue-name-row" key={`side-${person.id}`}>
+                    <span className="watchlist-dot normal" />
+                    <span>{person.name}</span>
+                  </div>
+                ))
+              ) : (
+                <div className="mini-info-text">
+                  No rescue personnel inside.
+                </div>
+              )}
             </div>
           </div>
         </div>
       </aside>
 
-      {showForm && (
-        <div className="detail-modal-overlay" onClick={resetForm}>
-          <div
-            className="rescue-form-modal"
-            onClick={(e) => e.stopPropagation()}
-          >
+      {showAddModal && (
+        <div className="detail-modal-overlay" onClick={closeAddModal}>
+          <div className="detail-modal" onClick={(e) => e.stopPropagation()}>
             <button
               className="modal-close-btn"
-              onClick={resetForm}
-              aria-label="Close form"
+              onClick={closeAddModal}
+              aria-label="Close add form"
             >
               ×
             </button>
 
-            <div className="detail-title">
-              {editingId ? "Edit Personnel" : "Add Personnel"}
-            </div>
-
+            <div className="detail-title">Add Rescue Personnel</div>
             <div className="detail-subtitle">
-              Maintain emergency response team details.
+              Search from personnel database, assign a rescue role, and add phone
+              number.
             </div>
 
-            <form
-              onSubmit={handleAddPerson}
-              className="rescue-form rescue-form-grid"
-            >
-              <input
-                type="text"
-                name="name"
-                placeholder="Full Name"
-                className="styled-input"
-                value={formData.name}
-                onChange={handleInputChange}
-                required
-              />
+            <form className="rescue-form" onSubmit={handleAddRescue}>
+              <div className="rescue-picker-wrap">
+                <div style={{ position: "relative" }}>
+                  <input
+                    className="styled-input"
+                    value={searchInput}
+                    onChange={(e) => {
+                      const value = e.target.value;
+
+                      setSearchInput(value);
+                      setSelectedName("");
+                      setSelectedDept("");
+
+                      if (value.trim().length < 3) {
+                        setDbResults([]);
+                      }
+                    }}
+                    placeholder="Search name from DB..."
+                    style={{ paddingRight: selectedName ? "44px" : undefined }}
+                  />
+
+                  {selectedName && (
+                    <button
+                      type="button"
+                      className="rescue-clear-btn"
+                      onClick={() => {
+                        setSearchInput("");
+                        setSelectedName("");
+                        setSelectedDept("");
+                        setDbResults([]);
+                      }}
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+
+                {!selectedName && loadingSearch && (
+                  <div className="mini-info-text">Searching personnel...</div>
+                )}
+
+                {!selectedName && dbResults.length > 0 && (
+                  <div className="rescue-search-results">
+                    {dbResults.map((person, index) => (
+                      <button
+                        type="button"
+                        className="rescue-search-result"
+                        key={`${person.Person}-${index}`}
+                        onClick={() => handleSelectDbPerson(person)}
+                      >
+                        <span>{person.Person}</span>
+                        <small>{person.PersonGroup || "No department"}</small>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              
 
               <select
-                name="role"
                 className="styled-input"
-                value={formData.role}
-                onChange={handleInputChange}
-                required
+                value={selectedRole}
+                onChange={(e) => setSelectedRole(e.target.value)}
               >
                 {ROLE_OPTIONS.map((role) => (
                   <option key={role} value={role}>
@@ -470,74 +403,31 @@ const handleRescueRoleChange = (e) => {
               </select>
 
               <input
-                type="text"
-                name="dept"
-                placeholder="Department"
                 className="styled-input"
-                value={formData.dept}
-                onChange={handleInputChange}
+                value={phoneInput}
+                onChange={(e) => setPhoneInput(e.target.value)}
+                placeholder="Phone number..."
               />
 
-              <input
-                type="tel"
-                name="phone"
-                placeholder="Phone"
-                className="styled-input"
-                value={formData.phone}
-                onChange={handleInputChange}
-              />
-
-              <input
-                type="email"
-                name="email"
-                placeholder="Email"
-                className="styled-input"
-                value={formData.email}
-                onChange={handleInputChange}
-              />
-
-              <div className="time-inputs">
-                <div className="time-field">
-                  <label>From</label>
-                  <input
-                    type="time"
-                    name="timeIn"
-                    className="styled-input"
-                    value={formData.timeIn}
-                    onChange={handleInputChange}
-                  />
+              {selectedName && (
+                <div className="mini-info-card">
+                  <div className="mini-info-title">{selectedName}</div>
+                  <div className="mini-info-text">
+                    {selectedDept || "No department"}
+                  </div>
                 </div>
-
-                <div className="time-field">
-                  <label>Until</label>
-                  <input
-                    type="time"
-                    name="timeOut"
-                    className="styled-input"
-                    value={formData.timeOut}
-                    onChange={handleInputChange}
-                  />
-                </div>
-              </div>
-
-              <input
-                type="file"
-                accept="image/*"
-                onChange={handleImageChange}
-                className="styled-input"
-                style={{ height: "auto", cursor: "pointer" }}
-              />
-
-              {formData.img && (
-                <img
-                  src={formData.img}
-                  alt="Preview"
-                  className="image-preview"
-                />
               )}
 
-              <button type="submit" className="primary-action-btn">
-                {editingId ? "Update Member" : "Add to Team"}
+              <button
+                type="submit"
+                className="primary-action-btn"
+                disabled={!selectedName.trim()}
+                style={{
+                  opacity: selectedName.trim() ? 1 : 0.55,
+                  cursor: selectedName.trim() ? "pointer" : "not-allowed",
+                }}
+              >
+                Add to Rescue List
               </button>
             </form>
           </div>
@@ -555,44 +445,55 @@ const handleRescueRoleChange = (e) => {
               ×
             </button>
 
-            <div className="detail-header">
-              <img
-                src={selectedPerson.img || "/default-avatar.jpg"}
-                alt={selectedPerson.name}
-                className="detail-avatar"
-              />
-
-              <div>
-                <div className="detail-title">{selectedPerson.name}</div>
-                <div className="detail-subtitle">{selectedPerson.role}</div>
-              </div>
-            </div>
-
-            <div className="detail-meta-row">
-              <span className="detail-badge">{selectedPerson.dept}</span>
-
-              <span className="detail-time-chip">
-                {selectedPerson.timeIn && selectedPerson.timeOut
-                  ? `${selectedPerson.timeIn} - ${selectedPerson.timeOut}`
-                  : selectedPerson.time}
-              </span>
+            <div className="detail-title">{selectedPerson.name}</div>
+            <div className="detail-subtitle">
+              {selectedPerson.dept || "Unknown Department"}
             </div>
 
             <div className="detail-list">
               <div>
-                <div className="detail-label">Email</div>
-                <div>{selectedPerson.email || "—"}</div>
+                <div className="detail-label">Rescue Role</div>
+                <select
+                  className="styled-input"
+                  value={editRole}
+                  onChange={(e) => setEditRole(e.target.value)}
+                >
+                  {ROLE_OPTIONS.map((role) => (
+                    <option key={role} value={role}>
+                      {role}
+                    </option>
+                  ))}
+                </select>
               </div>
 
               <div>
-                <div className="detail-label">Phone</div>
-                <div>{selectedPerson.phone || "—"}</div>
+                <div className="detail-label">Phone Number</div>
+                <input
+                  className="styled-input"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                  placeholder="Phone number..."
+                />
               </div>
 
               <div>
-                <div className="detail-label">Department</div>
-                <div>{selectedPerson.dept || "—"}</div>
+                <div className="detail-label">Status</div>
+                <div className="status-chip done">INSIDE</div>
               </div>
+            </div>
+
+            <div className="rescue-actions" style={{ marginTop: 16 }}>
+              <button className="primary-action-btn" onClick={handleUpdatePerson}>
+                Save
+              </button>
+
+              <button
+                className="primary-action-btn"
+                onClick={handleRemove}
+                style={{ background: "#ef4444" }}
+              >
+                Remove
+              </button>
             </div>
           </div>
         </div>

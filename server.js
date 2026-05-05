@@ -15,6 +15,8 @@ const app = express();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+const SERVER_PORT = process.env.SERVER_PORT || 5000 ;
+const SERVER_IP = process.env.SERVER_IP || "localhost";
 
 app.use(express.static(path.join(__dirname, "dist")));
 
@@ -311,31 +313,48 @@ async function getActiveSession() {
   return result.rows[0] || null;
 }
 
+app.get("/api/personnel-search", async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+
+    if (search.length < 3) {
+      return res.json([]);
+    }
+
+    const today = getTodayManila();
+
+    const result = await pool.query(
+      `
+      SELECT DISTINCT ON (LOWER(TRIM("Person")))
+        "Person",
+        "PersonGroup"
+      FROM "hkvision"."tbhikvision"
+      WHERE "C_Date" = $1
+        AND COALESCE(TRIM("Person"), '') <> ''
+        AND "Person" ILIKE $2
+      ORDER BY LOWER(TRIM("Person")), "C_Time" DESC
+      LIMIT 20
+      `,
+      [today, `%${search}%`]
+    );
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ PERSONNEL SEARCH ERROR:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // --------------------------------------------
 // RESCUE TEAM ROUTES
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
-    const { search, role } = req.query;
+    const { search } = req.query;
+    const today = getTodayManila();
 
-    let whereClause = "WHERE is_active = TRUE";
-    const params = [];
-
-    if (search && search.trim()) {
-      params.push(`%${search.trim()}%`);
-      whereClause += ` AND (
-        name ILIKE $${params.length}
-        OR role ILIKE $${params.length}
-        OR dept ILIKE $${params.length}
-      )`;
-    }
-
-    if (role && role.trim() && role !== "ALL") {
-      params.push(role.trim());
-      whereClause += ` AND role = $${params.length}`;
-    }
-
-    const result = await pool.query(
+    const rescueResult = await pool.query(
       `
       SELECT
         id,
@@ -351,13 +370,59 @@ app.get("/api/rescue-team", async (req, res) => {
         created_at,
         updated_at
       FROM app.rescue_team
-      ${whereClause}
+      WHERE is_active = TRUE
+        AND ($1::text = '' OR name ILIKE '%' || $1::text || '%')
       ORDER BY name ASC
       `,
-      params
+      [String(search || "").trim()]
     );
 
-    res.json(result.rows);
+    const insideResult = await pool.query(
+      `
+      SELECT DISTINCT ON (LOWER(TRIM("Person")))
+        "Person",
+        "PersonGroup",
+        "L_Mode",
+        "L_TID",
+        "C_Time"
+      FROM "hkvision"."tbhikvision"
+      WHERE "C_Date" = $1
+        AND "L_TID" = '1'
+        AND LOWER(TRIM("L_Mode")) IN (
+          'flane 1 entrance',
+          'flane 2 entrance'
+        )
+        AND COALESCE(TRIM("Person"), '') <> ''
+      ORDER BY LOWER(TRIM("Person")), "C_Time" DESC
+      `,
+      [today]
+    );
+
+    const insideMap = new Map();
+
+    for (const row of insideResult.rows) {
+      const key = buildPersonKey(row.Person);
+      if (key) insideMap.set(key, row);
+    }
+
+    const visibleRows = rescueResult.rows
+      .map((member) => {
+        const key = buildPersonKey(member.name);
+        const inside = insideMap.get(key);
+
+        if (!inside) return null;
+
+        return {
+          ...member,
+          dept: inside.PersonGroup || member.dept || "UNKNOWN",
+          inside: true,
+          last_mode: inside.L_Mode,
+          last_time: inside.C_Time,
+        };
+      })
+      .filter(Boolean);
+
+    res.json(visibleRows);
   } catch (err) {
     console.error("❌ RESCUE TEAM GET ERROR:", err.message);
     res.status(500).json({ error: err.message });
@@ -366,11 +431,33 @@ app.get("/api/rescue-team", async (req, res) => {
 
 app.post("/api/rescue-team", async (req, res) => {
   try {
-    const { name, role, dept, phone, email, timeIn, timeOut, img } = req.body;
+    const { name, phone, role } = req.body;
 
-    if (!name || !role) {
-      return res.status(400).json({ error: "name and role are required" });
+    if (!name) {
+      return res.status(400).json({ error: "name is required" });
     }
+
+    const today = getTodayManila();
+
+    const personCheck = await pool.query(
+      `
+      SELECT "Person", "PersonGroup"
+      FROM "hkvision"."tbhikvision"
+      WHERE "C_Date" = $1
+        AND COALESCE(TRIM("Person"), '') <> ''
+        AND LOWER(TRIM("Person")) = LOWER(TRIM($2))
+      LIMIT 1
+      `,
+      [today, name]
+    );
+
+    if (personCheck.rows.length === 0) {
+      return res.status(400).json({
+        error: "Person does not exist in Hikvision personnel database",
+      });
+    }
+
+    const person = personCheck.rows[0];
 
     const result = await pool.query(
       `
@@ -387,7 +474,19 @@ app.post("/api/rescue-team", async (req, res) => {
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, (NOW() AT TIME ZONE 'Asia/Manila'), (NOW() AT TIME ZONE 'Asia/Manila'))
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        NULL,
+        NULL,
+        NULL,
+        NULL,
+        TRUE,
+        (NOW() AT TIME ZONE 'Asia/Manila'),
+        (NOW() AT TIME ZONE 'Asia/Manila')
+      )
       RETURNING
         id,
         name,
@@ -401,16 +500,12 @@ app.post("/api/rescue-team", async (req, res) => {
         is_active,
         created_at,
         updated_at
-    `,
+      `,
       [
-        String(name).trim(),
-        String(role).trim(),
-        dept ? String(dept).trim() : "EMERGENCY",
+        String(person.Person).trim(),
+        role ? String(role).trim() : "Incident Commander",
+        person.PersonGroup || "EMERGENCY",
         phone ? String(phone).trim() : null,
-        email ? String(email).trim() : null,
-        timeIn ? String(timeIn).trim() : null,
-        timeOut ? String(timeOut).trim() : null,
-        img || null,
       ]
     );
 
@@ -1269,8 +1364,8 @@ app.use((req, res, next) => {
 // --------------------------------------------
 initDb()
   .then(() => {
-    app.listen(5000, () => {
-      console.log("🚀 Backend running on http://localhost:5000");
+    app.listen(SERVER_PORT, "0.0.0.0", () => {
+      console.log(`Backend running at http://${SERVER_IP}:${SERVER_PORT}`);
     });
   })
   .catch((err) => {
