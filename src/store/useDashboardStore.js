@@ -5,8 +5,16 @@ const PAGE_SIZE = 20;
 function normalizePerson(row, index = 0, isEmergency = false) {
   if (isEmergency) {
     return {
-      id: row?.l_uid ?? row?.L_UID ?? `row-${index}`,
-      personKey: row?.person_key ?? null,
+      id: row?.id ?? row?.l_uid ?? row?.L_UID ?? `row-${index}`,
+      personKey:
+        row?.person_key ??
+        `${(row?.person ?? row?.Person ?? "").trim().toLowerCase()}|${(
+          row?.persongroup ??
+          row?.PersonGroup ??
+          ""
+        )
+          .trim()
+          .toLowerCase()}`,
       name: row?.person ?? row?.Person ?? "Unknown",
       dept:
         row?.persongroup ??
@@ -288,28 +296,6 @@ clearEmergency: async () => {
 },
 
 
-  clearEmergency: async () => {
-    try {
-      const res = await fetch("/api/emergency/stop", {
-        method: "POST",
-      });
-      await parseJsonResponse(res);
-
-      set({
-        emergencyActive: false,
-        emergencyStartTime: null,
-        lastPersonnelRefreshKey: "",
-        lastPersonnelRefreshAt: 0,
-      });
-
-      await get().refreshPersonnel({ force: true });
-      await get().refreshHistory();
-      await get().fetchRescuePersonnel();
-    } catch (err) {
-      console.error("❌ CLEAR EMERGENCY ERROR:", err);
-    }
-  },
-
   refreshPersonnel: async ({ force = false } = {}) => {
     if (get().personnelLoading && !force) return;
 
@@ -500,54 +486,68 @@ clearEmergency: async () => {
   },
 
   togglePersonStatus: async (id) => {
-  const state = get();
+    const state = get();
 
-  if (!state.emergencyActive) return;
+    if (!state.emergencyActive) return;
 
-  const person = state.personnel.find((p) => p.id === id);
-  if (!person) return;
+    const person = state.personnel.find((p) => p.id === id);
 
-  const nextStatus = person.status === "SAFE" ? "NOT SAFE" : "SAFE";
+    if (!person) {
+      console.error("❌ Person not found in local state:", id);
+      return;
+    }
 
-  set((currentState) => ({
-    personnel: currentState.personnel.map((p) =>
-      p.id === id ? { ...p, status: nextStatus } : p
-    ),
-    safeTotal:
-      nextStatus === "SAFE"
-        ? (currentState.safeTotal ?? 0) + 1
-        : Math.max((currentState.safeTotal ?? 0) - 1, 0),
-    notSafeTotal:
-      nextStatus === "SAFE"
-        ? Math.max((currentState.notSafeTotal ?? 0) - 1, 0)
-        : (currentState.notSafeTotal ?? 0) + 1,
-  }));
+    if (!person.personKey) {
+      console.error("❌ Missing personKey, cannot update DB:", person);
+      return;
+    }
 
-  try {
-    const res = await fetch("/api/emergency/update-status", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        personKey: person.personKey,
-        status: nextStatus,
-        markedBy: "operator",
-      }),
-    });
+    const nextStatus = person.status === "SAFE" ? "NOT SAFE" : "SAFE";
 
-    await parseJsonResponse(res);
-    await get().refreshHistory();
-  } catch (err) {
-    console.error("❌ UPDATE STATUS ERROR:", err);
+    set((currentState) => ({
+      personnel: currentState.personnel.map((p) =>
+        p.id === id ? { ...p, status: nextStatus } : p
+      ),
+      safeTotal:
+        nextStatus === "SAFE"
+          ? (currentState.safeTotal ?? 0) + 1
+          : Math.max((currentState.safeTotal ?? 0) - 1, 0),
+      notSafeTotal:
+        nextStatus === "SAFE"
+          ? Math.max((currentState.notSafeTotal ?? 0) - 1, 0)
+          : (currentState.notSafeTotal ?? 0) + 1,
+    }));
 
-    set({
-      personnel: state.personnel,
-      safeTotal: state.safeTotal ?? 0,
-      notSafeTotal: state.notSafeTotal ?? 0,
-    });
-  }
-},
+    try {
+      const res = await fetch("/api/emergency/update-status", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          personKey: person.personKey,
+          status: nextStatus,
+          markedBy: "operator",
+        }),
+      });
+
+      const data = await parseJsonResponse(res);
+
+      if (!data?.success || !data?.updated) {
+        throw new Error("Failed to update status");
+      }
+
+      await get().refreshHistory();
+    } catch (err) {
+      console.error("❌ UPDATE STATUS ERROR:", err);
+
+      set({
+        personnel: state.personnel,
+        safeTotal: state.safeTotal ?? 0,
+        notSafeTotal: state.notSafeTotal ?? 0,
+      });
+    }
+  },
 
   fetchSessionDetails: async (sessionId) => {
     try {

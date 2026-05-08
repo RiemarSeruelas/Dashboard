@@ -958,6 +958,83 @@ app.post("/api/emergency/mark-safe", async (req, res) => {
   }
 });
 
+
+// --------------------------------------------
+// UPDATE EMERGENCY STATUS
+// Used by frontend when clicking a person card
+// --------------------------------------------
+app.post("/api/emergency/update-status", async (req, res) => {
+  try {
+    const { personKey, status, markedBy } = req.body;
+
+    if (!personKey) {
+      return res.status(400).json({ error: "personKey is required" });
+    }
+
+    if (!["SAFE", "NOT SAFE"].includes(status)) {
+      return res.status(400).json({ error: "Invalid status" });
+    }
+
+    const session = await getActiveSession();
+
+    if (!session) {
+      return res.status(400).json({ error: "No active emergency session" });
+    }
+
+    const updateResult = await pool.query(
+      `
+      UPDATE app.emergency_accountability
+      SET
+        current_status = $2,
+        marked_safe_at = CASE
+          WHEN $2 = 'SAFE' THEN (NOW() AT TIME ZONE 'Asia/Manila')
+          ELSE NULL
+        END,
+        marked_safe_by = CASE
+          WHEN $2 = 'SAFE' THEN $3
+          ELSE NULL
+        END,
+        updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
+      WHERE session_id = $1
+        AND person_key = $4
+      RETURNING
+        id,
+        session_id,
+        person_key,
+        l_uid,
+        person,
+        persongroup,
+        initial_mode,
+        initial_tid,
+        current_status,
+        marked_safe_at,
+        marked_safe_by,
+        created_at,
+        updated_at
+      `,
+      [session.id, status, markedBy || "operator", personKey]
+    );
+
+    if (updateResult.rows.length === 0) {
+      return res.status(404).json({
+        error: "Person not found in active emergency session",
+        personKey,
+        sessionId: session.id,
+      });
+    }
+
+    clearNormalPersonnelCache();
+
+    res.json({
+      success: true,
+      updated: updateResult.rows[0],
+    });
+  } catch (err) {
+    console.error("❌ UPDATE STATUS ERROR:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // --------------------------------------------
 // HISTORY
 // --------------------------------------------

@@ -10,7 +10,7 @@ export default function PasscodePage() {
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e) {
-    e.preventDefault(); 
+    e.preventDefault();
     setError("");
     setLoading(true);
 
@@ -33,7 +33,7 @@ export default function PasscodePage() {
       navigate("/personnel");
     } catch (err) {
       setError(err.message);
-    } finally {b 
+    } finally {
       setLoading(false);
     }
   }
