@@ -15,7 +15,7 @@ export default function PasscodePage() {
     setLoading(true);
 
     try {
-      const res = await fetch("http://localhost:5000/api/auth/passcode", {
+      const res = await fetch("/api/auth/passcode", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -33,7 +33,7 @@ export default function PasscodePage() {
       navigate("/personnel");
     } catch (err) {
       setError(err.message);
-    } finally {
+    } finally {b 
       setLoading(false);
     }
   }

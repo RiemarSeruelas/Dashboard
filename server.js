@@ -1182,6 +1182,23 @@ async function syncMusteringScansToActiveSession() {
   };
 }
 
+app.post("/api/auth/passcode", (req, res) => {
+  const { passcode } = req.body;
+
+  if (!process.env.APP_PASSWORD) {
+    return res.status(500).json({ error: "APP_PASSWORD is not configured" });
+  }
+
+  if (passcode !== process.env.APP_PASSWORD) {
+    return res.status(401).json({ error: "Invalid passcode" });
+  }
+
+  res.json({
+    success: true,
+    token: "passcode-ok",
+  });
+});
+
 app.post("/api/emergency/sync-mustering", async (req, res) => {
   try {
     const now = Date.now();
