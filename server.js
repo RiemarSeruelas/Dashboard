@@ -15,10 +15,6 @@ const app = express();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const SERVER_PORT = process.env.SERVER_PORT || 5000 ;
-const SERVER_IP = process.env.SERVER_IP || "localhost";
-
-app.use(express.static(path.join(__dirname, "dist")));
 
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
@@ -313,49 +309,12 @@ async function getActiveSession() {
   return result.rows[0] || null;
 }
 
-app.get("/api/personnel-search", async (req, res) => {
-  try {
-    const search = String(req.query.search || "").trim();
-
-    if (search.length < 3) {
-      return res.json([]);
-    }
-
-    const today = getTodayManila();
-
-    const result = await pool.query(
-      `
-      SELECT DISTINCT ON (LOWER(TRIM("Person")))
-        "Person",
-        "PersonGroup"
-      FROM "hkvision"."tbhikvision"
-      WHERE "C_Date" = $1
-        AND COALESCE(TRIM("Person"), '') <> ''
-        AND "Person" ILIKE $2
-      ORDER BY LOWER(TRIM("Person")), "C_Time" DESC
-      LIMIT 20
-      `,
-      [today, `%${search}%`]
-    );
-
-    res.json(result.rows);
-  } catch (err) {
-    console.error("❌ PERSONNEL SEARCH ERROR:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
-
 // --------------------------------------------
 // RESCUE TEAM ROUTES
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
-    const { search } = req.query;
-    const today = getTodayManila();
-
-    const rescueResult = await pool.query(
-      `
+    const result = await pool.query(`
       SELECT
         id,
         name,
@@ -371,58 +330,10 @@ app.get("/api/rescue-team", async (req, res) => {
         updated_at
       FROM app.rescue_team
       WHERE is_active = TRUE
-        AND ($1::text = '' OR name ILIKE '%' || $1::text || '%')
       ORDER BY name ASC
-      `,
-      [String(search || "").trim()]
-    );
+    `);
 
-    const insideResult = await pool.query(
-      `
-      SELECT DISTINCT ON (LOWER(TRIM("Person")))
-        "Person",
-        "PersonGroup",
-        "L_Mode",
-        "L_TID",
-        "C_Time"
-      FROM "hkvision"."tbhikvision"
-      WHERE "C_Date" = $1
-        AND "L_TID" = '1'
-        AND LOWER(TRIM("L_Mode")) IN (
-          'flane 1 entrance',
-          'flane 2 entrance'
-        )
-        AND COALESCE(TRIM("Person"), '') <> ''
-      ORDER BY LOWER(TRIM("Person")), "C_Time" DESC
-      `,
-      [today]
-    );
-
-    const insideMap = new Map();
-
-    for (const row of insideResult.rows) {
-      const key = buildPersonKey(row.Person);
-      if (key) insideMap.set(key, row);
-    }
-
-    const visibleRows = rescueResult.rows
-      .map((member) => {
-        const key = buildPersonKey(member.name);
-        const inside = insideMap.get(key);
-
-        if (!inside) return null;
-
-        return {
-          ...member,
-          dept: inside.PersonGroup || member.dept || "UNKNOWN",
-          inside: true,
-          last_mode: inside.L_Mode,
-          last_time: inside.C_Time,
-        };
-      })
-      .filter(Boolean);
-
-    res.json(visibleRows);
+    res.json(result.rows);
   } catch (err) {
     console.error("❌ RESCUE TEAM GET ERROR:", err.message);
     res.status(500).json({ error: err.message });
@@ -431,33 +342,11 @@ app.get("/api/rescue-team", async (req, res) => {
 
 app.post("/api/rescue-team", async (req, res) => {
   try {
-    const { name, phone, role } = req.body;
+    const { name, role, dept, phone, email, timeIn, timeOut, img } = req.body;
 
-    if (!name) {
-      return res.status(400).json({ error: "name is required" });
+    if (!name || !role) {
+      return res.status(400).json({ error: "name and role are required" });
     }
-
-    const today = getTodayManila();
-
-    const personCheck = await pool.query(
-      `
-      SELECT "Person", "PersonGroup"
-      FROM "hkvision"."tbhikvision"
-      WHERE "C_Date" = $1
-        AND COALESCE(TRIM("Person"), '') <> ''
-        AND LOWER(TRIM("Person")) = LOWER(TRIM($2))
-      LIMIT 1
-      `,
-      [today, name]
-    );
-
-    if (personCheck.rows.length === 0) {
-      return res.status(400).json({
-        error: "Person does not exist in Hikvision personnel database",
-      });
-    }
-
-    const person = personCheck.rows[0];
 
     const result = await pool.query(
       `
@@ -474,19 +363,7 @@ app.post("/api/rescue-team", async (req, res) => {
         created_at,
         updated_at
       )
-      VALUES (
-        $1,
-        $2,
-        $3,
-        $4,
-        NULL,
-        NULL,
-        NULL,
-        NULL,
-        TRUE,
-        (NOW() AT TIME ZONE 'Asia/Manila'),
-        (NOW() AT TIME ZONE 'Asia/Manila')
-      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, (NOW() AT TIME ZONE 'Asia/Manila'), (NOW() AT TIME ZONE 'Asia/Manila'))
       RETURNING
         id,
         name,
@@ -500,12 +377,16 @@ app.post("/api/rescue-team", async (req, res) => {
         is_active,
         created_at,
         updated_at
-      `,
+    `,
       [
-        String(person.Person).trim(),
-        role ? String(role).trim() : "Incident Commander",
-        person.PersonGroup || "EMERGENCY",
+        String(name).trim(),
+        String(role).trim(),
+        dept ? String(dept).trim() : "EMERGENCY",
         phone ? String(phone).trim() : null,
+        email ? String(email).trim() : null,
+        timeIn ? String(timeIn).trim() : null,
+        timeOut ? String(timeOut).trim() : null,
+        img || null,
       ]
     );
 
@@ -621,9 +502,9 @@ app.delete("/api/rescue-team/:id", async (req, res) => {
   }
 });
 
-// --------------------------------------------
-// MAP ROUTES
-// --------------------------------------------
+// IMPORTANT FIX:
+// This signature checks all latest events today, not only IN records.
+// So when a person exits, the cache is invalidated.
 async function getLatestNormalDbSignature(targetDate) {
   const result = await pool.query(
     `
@@ -631,11 +512,6 @@ async function getLatestNormalDbSignature(targetDate) {
       COALESCE(MAX(("C_Date"::text || ' ' || "C_Time"::text)), '') AS latest_signature
     FROM "hkvision"."tbhikvision"
     WHERE "C_Date" = $1
-      AND "L_TID" = '1'
-      AND LOWER(TRIM("L_Mode")) IN (
-        'flane 1 entrance',
-        'flane 2 entrance'
-      )
       AND COALESCE(TRIM("Person"), '') <> ''
     `,
     [targetDate]
@@ -643,7 +519,6 @@ async function getLatestNormalDbSignature(targetDate) {
 
   return result.rows[0]?.latest_signature || "";
 }
-
 
 // --------------------------------------------
 // NORMAL MODE: paginated live entrance population
@@ -666,18 +541,39 @@ app.get("/api/hikvision-normal", async (req, res) => {
 
     const latestDbSignature = await getLatestNormalDbSignature(targetDate);
 
-const cachedPayload = getCachedNormalPayload(cacheKey, latestDbSignature);
+    const cachedPayload = getCachedNormalPayload(cacheKey, latestDbSignature);
+    if (cachedPayload) {
+      return res.json({
+        ...cachedPayload,
+        source: "cache",
+        latestDbSignature,
+      });
+    }
 
-if (cachedPayload) {
-  return res.json({
-    ...cachedPayload,
-    source: "cache",
-    latestDbSignature,
-  });
-}
-
+    // IMPORTANT FIX:
+    // Get the latest record per person first.
+    // Then only show people whose latest status is IN.
+    // This prevents people from staying visible after they exit.
     const rawResult = await pool.query(
       `
+      WITH latest AS (
+        SELECT
+          "CardNo",
+          "L_UID",
+          "Person",
+          "PersonGroup",
+          "L_Mode",
+          "L_TID",
+          "C_Date",
+          "C_Time",
+          ROW_NUMBER() OVER (
+            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
+            ORDER BY "C_Date" DESC, "C_Time" DESC
+          ) AS rn
+        FROM "hkvision"."tbhikvision"
+        WHERE "C_Date" = $1
+          AND COALESCE(TRIM("Person"), '') <> ''
+      )
       SELECT
         "CardNo",
         "L_UID",
@@ -687,14 +583,13 @@ if (cachedPayload) {
         "L_TID",
         "C_Date",
         "C_Time"
-      FROM "hkvision"."tbhikvision"
-      WHERE "C_Date" = $1
+      FROM latest
+      WHERE rn = 1
         AND "L_TID" = '1'
         AND LOWER(TRIM("L_Mode")) IN (
           'flane 1 entrance',
           'flane 2 entrance'
         )
-        AND COALESCE(TRIM("Person"), '') <> ''
       ORDER BY "C_Time" DESC
       `,
       [targetDate]
@@ -703,7 +598,17 @@ if (cachedPayload) {
     let rows = dedupeRowsByCanonicalName(rawResult.rows);
 
     if (search) {
-      rows = rows.filter((row) => searchMatchesName(row?.Person, search));
+      rows = rows.filter((row) => {
+        return (
+          searchMatchesName(row?.Person, search) ||
+          String(row?.PersonGroup || "")
+            .toLowerCase()
+            .includes(search.toLowerCase()) ||
+          String(row?.L_Mode || "")
+            .toLowerCase()
+            .includes(search.toLowerCase())
+        );
+      });
     }
 
     if (dept && dept !== "ALL") {
@@ -727,11 +632,11 @@ if (cachedPayload) {
 
     setCachedNormalPayload(cacheKey, payload, latestDbSignature);
 
-res.json({
-  ...payload,
-  source: "database",
-  latestDbSignature,
-});
+    res.json({
+      ...payload,
+      source: "database",
+      latestDbSignature,
+    });
   } catch (err) {
     console.error("❌ NORMAL GET ERROR:", err.message);
     res.status(500).json({ error: err.message });
@@ -744,8 +649,28 @@ res.json({
 async function snapshotCurrentPersonnelToSession(sessionId) {
   const todayManila = getTodayManila();
 
+  // IMPORTANT FIX:
+  // Snapshot only people whose latest scan today is IN.
+  // This prevents exited people from being included in emergency.
   const rawResult = await pool.query(
     `
+    WITH latest AS (
+      SELECT
+        "L_UID",
+        "Person",
+        "PersonGroup",
+        "L_Mode",
+        "L_TID",
+        "C_Date",
+        "C_Time",
+        ROW_NUMBER() OVER (
+          PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
+          ORDER BY "C_Date" DESC, "C_Time" DESC
+        ) AS rn
+      FROM "hkvision"."tbhikvision"
+      WHERE "C_Date" = $1
+        AND COALESCE(TRIM("Person"), '') <> ''
+    )
     SELECT
       "L_UID",
       "Person",
@@ -754,14 +679,13 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
       "L_TID",
       "C_Date",
       "C_Time"
-    FROM "hkvision"."tbhikvision"
-    WHERE "C_Date" = $1
+    FROM latest
+    WHERE rn = 1
       AND "L_TID" = '1'
       AND LOWER(TRIM("L_Mode")) IN (
         'flane 1 entrance',
         'flane 2 entrance'
       )
-      AND COALESCE(TRIM("Person"), '') <> ''
     ORDER BY "C_Time" DESC
     `,
     [todayManila]
@@ -903,7 +827,7 @@ app.get("/api/emergency-status", async (req, res) => {
 });
 
 // --------------------------------------------
-// ACTIVE EMERGENCY ACCOUNTABILITY (paginated)
+// ACTIVE EMERGENCY ACCOUNTABILITY
 // --------------------------------------------
 app.get("/api/emergency-accountability", async (req, res) => {
   try {
@@ -951,7 +875,17 @@ app.get("/api/emergency-accountability", async (req, res) => {
     let rows = result.rows;
 
     if (search) {
-      rows = rows.filter((row) => searchMatchesName(row?.person, search));
+      rows = rows.filter((row) => {
+        return (
+          searchMatchesName(row?.person, search) ||
+          String(row?.persongroup || "")
+            .toLowerCase()
+            .includes(search.toLowerCase()) ||
+          String(row?.initial_mode || "")
+            .toLowerCase()
+            .includes(search.toLowerCase())
+        );
+      });
     }
 
     if (dept && dept !== "ALL") {
@@ -1024,55 +958,8 @@ app.post("/api/emergency/mark-safe", async (req, res) => {
   }
 });
 
-app.post("/api/emergency/update-status", async (req, res) => {
-  try {
-    const { personKey, status, markedBy } = req.body;
-
-    if (!personKey) {
-      return res.status(400).json({ error: "personKey is required" });
-    }
-
-    const normalizedStatus = status === "SAFE" ? "SAFE" : "NOT SAFE";
-
-    const session = await getActiveSession();
-
-    if (!session) {
-      return res.status(400).json({ error: "No active emergency session" });
-    }
-
-    const updateResult = await pool.query(
-      `
-      UPDATE app.emergency_accountability
-      SET
-        current_status = $4,
-        marked_safe_at = CASE
-          WHEN $4 = 'SAFE' THEN (NOW() AT TIME ZONE 'Asia/Manila')
-          ELSE NULL
-        END,
-        marked_safe_by = CASE
-          WHEN $4 = 'SAFE' THEN $2
-          ELSE NULL
-        END,
-        updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
-      WHERE session_id = $1
-        AND person_key = $3
-      RETURNING *
-      `,
-      [session.id, markedBy || "operator", personKey, normalizedStatus]
-    );
-
-    res.json({
-      success: true,
-      updated: updateResult.rows[0] || null,
-    });
-  } catch (err) {
-    console.error("❌ UPDATE STATUS ERROR:", err.message);
-    res.status(500).json({ error: err.message });
-  }
-});
-
 // --------------------------------------------
-// HISTORY: paginated sessions only
+// HISTORY
 // --------------------------------------------
 app.get("/api/emergency/history", async (req, res) => {
   try {
@@ -1126,7 +1013,7 @@ app.get("/api/emergency/history", async (req, res) => {
 });
 
 // --------------------------------------------
-// HISTORY DETAILS: one session's saved people
+// HISTORY DETAILS
 // --------------------------------------------
 app.get("/api/emergency/history/:sessionId", async (req, res) => {
   try {
@@ -1163,7 +1050,7 @@ app.get("/api/emergency/history/:sessionId", async (req, res) => {
 });
 
 // --------------------------------------------
-// ANALYTICS: one session grouped by department
+// ANALYTICS
 // --------------------------------------------
 app.get("/api/emergency/analytics/:sessionId", async (req, res) => {
   try {
@@ -1195,6 +1082,9 @@ app.get("/api/emergency/analytics/:sessionId", async (req, res) => {
   }
 });
 
+// --------------------------------------------
+// MUSTERING SYNC
+// --------------------------------------------
 async function syncMusteringScansToActiveSession() {
   const session = await getActiveSession();
 
@@ -1209,31 +1099,28 @@ async function syncMusteringScansToActiveSession() {
 
   const todayManila = getTodayManila();
 
- const musterResult = await pool.query(
-  `
-  SELECT
-    h."L_UID",
-    h."Person",
-    h."PersonGroup",
-    h."L_Mode",
-    h."L_TID",
-    h."C_Date",
-    h."C_Time"
-  FROM "hkvision"."tbhikvision" h
-  JOIN app.emergency_sessions es
-    ON es.id = $1
-  WHERE (h."C_Date"::date + h."C_Time"::time) >= (es.started_at - INTERVAL '15 minutes')
-    AND h."L_TID" = '1'
-    AND LOWER(TRIM(h."L_Mode")) IN (
-      'engineering mustering area',
-      'savory mustering area',
-      'savoury mustering area'
-    )
-    AND COALESCE(TRIM(h."Person"), '') <> ''
-  ORDER BY h."C_Date" DESC, h."C_Time" DESC
-  `,
-  [session.id]
-);
+  const musterResult = await pool.query(
+    `
+    SELECT
+      "L_UID",
+      "Person",
+      "PersonGroup",
+      "L_Mode",
+      "L_TID",
+      "C_Date",
+      "C_Time"
+    FROM "hkvision"."tbhikvision"
+    WHERE "C_Date" = $1
+      AND "L_TID" = '1'
+      AND LOWER(TRIM("L_Mode")) IN (
+        'engineering mustering area',
+        'savory mustering area'
+      )
+      AND COALESCE(TRIM("Person"), '') <> ''
+    ORDER BY "C_Time" DESC
+    `,
+    [todayManila]
+  );
 
   const dedupedMap = new Map();
 
@@ -1336,22 +1223,10 @@ app.post("/api/emergency/sync-mustering", async (req, res) => {
   }
 });
 
-app.post("/api/auth/passcode", (req, res) => {
-  const { passcode } = req.body;
-
-  if (!process.env.APP_PASSCODE) {
-    return res.status(500).json({ error: "APP_PASSCODE is not configured" });
-  }
-
-  if (passcode !== process.env.APP_PASSCODE) {
-    return res.status(401).json({ error: "Invalid passcode" });
-  }
-
-  res.json({
-    success: true,
-    token: "passcode-ok",
-  });
-});
+// --------------------------------------------
+// SERVE REACT BUILD
+// --------------------------------------------
+app.use(express.static(path.join(__dirname, "dist")));
 
 app.use((req, res, next) => {
   if (req.path.startsWith("/api")) return next();
@@ -1364,8 +1239,10 @@ app.use((req, res, next) => {
 // --------------------------------------------
 initDb()
   .then(() => {
-    app.listen(SERVER_PORT, "0.0.0.0", () => {
-      console.log(`Backend running at http://${SERVER_IP}:${SERVER_PORT}`);
+    const PORT = Number(process.env.PORT) || 5000;
+
+    app.listen(PORT, () => {
+      console.log(`🚀 Backend running on http://localhost:${PORT}`);
     });
   })
   .catch((err) => {
