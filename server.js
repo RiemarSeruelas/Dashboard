@@ -335,7 +335,7 @@ app.get("/api/rescue-team", async (req, res) => {
 
     const result = await pool.query(
       `
-      WITH active_rescue AS (
+      WITH rescue AS (
         SELECT
           id,
           l_uid,
@@ -353,11 +353,34 @@ app.get("/api/rescue-team", async (req, res) => {
         FROM app.rescue_team
         WHERE is_active = TRUE
       ),
-      matched_scans AS (
+
+      today_scans AS (
         SELECT
-          rt.id AS rescue_id,
-          rt.l_uid AS rescue_l_uid,
-          rt.name AS rescue_name,
+          h."L_UID",
+          h."Person",
+          h."PersonGroup",
+          h."L_Mode",
+          h."L_TID",
+          h."C_Date",
+          h."C_Time"
+        FROM "hkvision"."tbhikvision" h
+        WHERE h."C_Date"::date = $1::date
+          AND TRIM(COALESCE(h."L_TID"::text, '')) = '1'
+          AND COALESCE(TRIM(h."Person"), '') <> ''
+          AND (
+            LOWER(TRIM(h."L_Mode")) IN (
+              'flane 1 entrance',
+              'flane 2 entrance'
+            )
+            OR LOWER(TRIM(h."L_Mode")) LIKE '%mustering%'
+          )
+      ),
+
+      matched_today AS (
+        SELECT
+          rt.id,
+          rt.l_uid,
+          rt.name,
           rt.role,
           rt.dept,
           rt.phone,
@@ -369,20 +392,20 @@ app.get("/api/rescue-team", async (req, res) => {
           rt.created_at,
           rt.updated_at,
 
-          h."L_UID",
-          h."Person",
-          h."PersonGroup",
-          h."L_Mode",
-          h."L_TID",
-          h."C_Date",
-          h."C_Time",
+          h."L_UID" AS hikvision_l_uid,
+          h."Person" AS hikvision_name,
+          h."PersonGroup" AS hikvision_group,
+          h."L_Mode" AS last_mode,
+          h."L_TID" AS last_tid,
+          h."C_Date" AS last_date,
+          h."C_Time" AS last_time,
 
           ROW_NUMBER() OVER (
             PARTITION BY rt.id
             ORDER BY h."C_Date" DESC, h."C_Time" DESC
           ) AS rn
-        FROM active_rescue rt
-        INNER JOIN "hkvision"."tbhikvision" h
+        FROM rescue rt
+        INNER JOIN today_scans h
           ON (
             NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
             AND TRIM(h."L_UID") = TRIM(rt.l_uid)
@@ -391,21 +414,12 @@ app.get("/api/rescue-team", async (req, res) => {
             NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NULL
             AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
           )
-        WHERE COALESCE(TRIM(h."Person"), '') <> ''
-          AND (
-            h."C_Date"::date = $1::date
-            OR TO_CHAR(h."C_Date"::timestamp, 'YYYY-MM-DD') = $1::text
-          )
-      ),
-      latest_per_rescue AS (
-        SELECT *
-        FROM matched_scans
-        WHERE rn = 1
       )
+
       SELECT
-        rescue_id AS id,
-        rescue_l_uid AS l_uid,
-        rescue_name AS name,
+        id,
+        l_uid,
+        name,
         role,
         dept,
         phone,
@@ -417,31 +431,42 @@ app.get("/api/rescue-team", async (req, res) => {
         created_at,
         updated_at,
 
-        "L_UID" AS hikvision_l_uid,
-        "Person" AS hikvision_name,
-        "PersonGroup" AS hikvision_group,
-        "L_Mode" AS last_mode,
-        "L_TID" AS last_tid,
-        "C_Date" AS last_date,
-        "C_Time" AS last_time,
+        hikvision_l_uid,
+        hikvision_name,
+        hikvision_group,
+        last_mode,
+        last_tid,
+        last_date,
+        last_time,
 
         $1::text AS filter_date,
         TRUE AS inside
 
-      FROM latest_per_rescue
-      WHERE TRIM(COALESCE("L_TID"::text, '')) = '1'
+      FROM matched_today
+      WHERE rn = 1
+        AND last_date::date = $1::date
+        AND TRIM(COALESCE(last_tid::text, '')) = '1'
+        AND (
+          LOWER(TRIM(last_mode)) IN (
+            'flane 1 entrance',
+            'flane 2 entrance'
+          )
+          OR LOWER(TRIM(last_mode)) LIKE '%mustering%'
+        )
         AND (
           $2::text = ''
-          OR LOWER(rescue_name) LIKE LOWER('%' || $2::text || '%')
+          OR LOWER(name) LIKE LOWER('%' || $2::text || '%')
           OR LOWER(role) LIKE LOWER('%' || $2::text || '%')
           OR LOWER(dept) LIKE LOWER('%' || $2::text || '%')
         )
-      ORDER BY rescue_name ASC
+      ORDER BY name ASC
       `,
       [targetDate, search]
     );
 
-    console.log("✅ RESCUE ROUTE VERSION: TARGET_DATE_LATEST_PER_RESCUE");
+    res.set("Cache-Control", "no-store");
+
+    console.log("✅ RESCUE ROUTE VERSION: ONLY_TODAY_TID1_FLANE_OR_MUSTERING");
     console.log("✅ TARGET DATE:", targetDate);
     console.log("✅ RESCUE INSIDE COUNT:", result.rows.length);
     console.log(
