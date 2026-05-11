@@ -365,15 +365,7 @@ app.get("/api/rescue-team", async (req, res) => {
           h."C_Time"
         FROM "hkvision"."tbhikvision" h
         WHERE h."C_Date"::date = $1::date
-          AND TRIM(COALESCE(h."L_TID"::text, '')) = '1'
           AND COALESCE(TRIM(h."Person"), '') <> ''
-          AND (
-            LOWER(TRIM(h."L_Mode")) IN (
-              'flane 1 entrance',
-              'flane 2 entrance'
-            )
-            OR LOWER(TRIM(h."L_Mode")) LIKE '%mustering%'
-          )
       ),
 
       matched_today AS (
@@ -404,14 +396,15 @@ app.get("/api/rescue-team", async (req, res) => {
             PARTITION BY rt.id
             ORDER BY h."C_Date" DESC, h."C_Time" DESC
           ) AS rn
+
         FROM rescue rt
         INNER JOIN today_scans h
           ON (
-            NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
-            AND TRIM(h."L_UID") = TRIM(rt.l_uid)
+            NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NOT NULL
+            AND TRIM(h."L_UID"::text) = TRIM(rt.l_uid::text)
           )
           OR (
-            NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NULL
+            NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NULL
             AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
           )
       )
@@ -444,8 +437,14 @@ app.get("/api/rescue-team", async (req, res) => {
 
       FROM matched_today
       WHERE rn = 1
+
+        -- latest scan must be TODAY
         AND last_date::date = $1::date
+
+        -- latest scan must be IN
         AND TRIM(COALESCE(last_tid::text, '')) = '1'
+
+        -- latest scan location must be FLane 1, FLane 2, or Mustering
         AND (
           LOWER(TRIM(last_mode)) IN (
             'flane 1 entrance',
@@ -453,12 +452,15 @@ app.get("/api/rescue-team", async (req, res) => {
           )
           OR LOWER(TRIM(last_mode)) LIKE '%mustering%'
         )
+
+        -- search filter
         AND (
           $2::text = ''
           OR LOWER(name) LIKE LOWER('%' || $2::text || '%')
           OR LOWER(role) LIKE LOWER('%' || $2::text || '%')
           OR LOWER(dept) LIKE LOWER('%' || $2::text || '%')
         )
+
       ORDER BY name ASC
       `,
       [targetDate, search]
@@ -466,7 +468,7 @@ app.get("/api/rescue-team", async (req, res) => {
 
     res.set("Cache-Control", "no-store");
 
-    console.log("✅ RESCUE ROUTE VERSION: ONLY_TODAY_TID1_FLANE_OR_MUSTERING");
+    console.log("✅ RESCUE ROUTE VERSION: LATEST_SCAN_TODAY_ONLY_THEN_TID1_FLANE_OR_MUSTERING");
     console.log("✅ TARGET DATE:", targetDate);
     console.log("✅ RESCUE INSIDE COUNT:", result.rows.length);
     console.log(
