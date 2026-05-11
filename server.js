@@ -772,9 +772,6 @@ app.get("/api/hikvision-normal", async (req, res) => {
 async function snapshotCurrentPersonnelToSession(sessionId) {
   const todayManila = getTodayManila();
 
-  // IMPORTANT FIX:
-  // Snapshot only people whose latest scan today is IN.
-  // This prevents exited people from being included in emergency.
   const rawResult = await pool.query(
     `
     WITH latest AS (
@@ -791,7 +788,7 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
           ORDER BY "C_Date" DESC, "C_Time" DESC
         ) AS rn
       FROM "hkvision"."tbhikvision"
-      WHERE "C_Date" = $1
+      WHERE "C_Date"::date = $1::date
         AND COALESCE(TRIM("Person"), '') <> ''
     )
     SELECT
@@ -801,13 +798,23 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
       "L_Mode",
       "L_TID",
       "C_Date",
-      "C_Time"
+      "C_Time",
+      CASE
+        WHEN LOWER(TRIM("L_Mode")) IN (
+          'engineering mustering area',
+          'savory mustering area'
+        )
+        THEN 'SAFE'
+        ELSE 'NOT SAFE'
+      END AS initial_status
     FROM latest
     WHERE rn = 1
-      AND "L_TID" = '1'
+      AND TRIM("L_TID") = '1'
       AND LOWER(TRIM("L_Mode")) IN (
         'flane 1 entrance',
-        'flane 2 entrance'
+        'flane 2 entrance',
+        'engineering mustering area',
+        'savory mustering area'
       )
     ORDER BY "C_Time" DESC
     `,
@@ -818,6 +825,8 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
   let insertedCount = 0;
 
   for (const row of dedupedRows) {
+    const isSafe = row.initial_status === "SAFE";
+
     const insertResult = await pool.query(
       `
       INSERT INTO app.emergency_accountability (
@@ -829,6 +838,8 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         initial_mode,
         initial_tid,
         current_status,
+        marked_safe_at,
+        marked_safe_by,
         created_at,
         updated_at
       )
@@ -840,11 +851,39 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         $5,
         $6,
         $7,
-        'NOT SAFE',
+        $8,
+        CASE
+          WHEN $8 = 'SAFE' THEN (NOW() AT TIME ZONE 'Asia/Manila')
+          ELSE NULL
+        END,
+        CASE
+          WHEN $8 = 'SAFE' THEN 'mustering-snapshot'
+          ELSE NULL
+        END,
         (NOW() AT TIME ZONE 'Asia/Manila'),
         (NOW() AT TIME ZONE 'Asia/Manila')
       )
-      ON CONFLICT (session_id, person_key) DO NOTHING
+      ON CONFLICT (session_id, person_key) DO UPDATE
+      SET
+        l_uid = EXCLUDED.l_uid,
+        persongroup = EXCLUDED.persongroup,
+        initial_mode = EXCLUDED.initial_mode,
+        initial_tid = EXCLUDED.initial_tid,
+        current_status = CASE
+          WHEN EXCLUDED.current_status = 'SAFE' THEN 'SAFE'
+          ELSE app.emergency_accountability.current_status
+        END,
+        marked_safe_at = CASE
+          WHEN EXCLUDED.current_status = 'SAFE'
+            THEN COALESCE(app.emergency_accountability.marked_safe_at, EXCLUDED.marked_safe_at)
+          ELSE app.emergency_accountability.marked_safe_at
+        END,
+        marked_safe_by = CASE
+          WHEN EXCLUDED.current_status = 'SAFE'
+            THEN COALESCE(app.emergency_accountability.marked_safe_by, EXCLUDED.marked_safe_by)
+          ELSE app.emergency_accountability.marked_safe_by
+        END,
+        updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
       `,
       [
         sessionId,
@@ -854,6 +893,7 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         row.PersonGroup || null,
         row.L_Mode || null,
         row.L_TID || null,
+        isSafe ? "SAFE" : "NOT SAFE",
       ]
     );
 
@@ -1300,27 +1340,27 @@ async function syncMusteringScansToActiveSession() {
   const todayManila = getTodayManila();
 
   const musterResult = await pool.query(
-    `
-    SELECT
-      "L_UID",
-      "Person",
-      "PersonGroup",
-      "L_Mode",
-      "L_TID",
-      "C_Date",
-      "C_Time"
-    FROM "hkvision"."tbhikvision"
-    WHERE "C_Date" = $1
-      AND "L_TID" = '1'
-      AND LOWER(TRIM("L_Mode")) IN (
-        'engineering mustering area',
-        'savory mustering area'
-      )
-      AND COALESCE(TRIM("Person"), '') <> ''
-    ORDER BY "C_Time" DESC
-    `,
-    [todayManila]
-  );
+  `
+  SELECT
+    "L_UID",
+    "Person",
+    "PersonGroup",
+    "L_Mode",
+    "L_TID",
+    "C_Date",
+    "C_Time"
+  FROM "hkvision"."tbhikvision"
+  WHERE "C_Date"::date = $1::date
+    AND TRIM("L_TID") = '1'
+    AND LOWER(TRIM("L_Mode")) IN (
+      'engineering mustering area',
+      'savory mustering area'
+    )
+    AND COALESCE(TRIM("Person"), '') <> ''
+  ORDER BY "C_Time" DESC
+  `,
+  [todayManila]
+);
 
   const dedupedMap = new Map();
 
