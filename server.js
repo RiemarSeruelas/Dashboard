@@ -800,21 +800,19 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
       "C_Date",
       "C_Time",
       CASE
-        WHEN LOWER(TRIM("L_Mode")) IN (
-          'engineering mustering area',
-          'savory mustering area'
-        )
-        THEN 'SAFE'
+        WHEN LOWER(TRIM("L_Mode")) LIKE '%mustering%'
+          THEN 'SAFE'
         ELSE 'NOT SAFE'
       END AS initial_status
     FROM latest
     WHERE rn = 1
       AND TRIM("L_TID") = '1'
-      AND LOWER(TRIM("L_Mode")) IN (
-        'flane 1 entrance',
-        'flane 2 entrance',
-        'engineering mustering area',
-        'savory mustering area'
+      AND (
+        LOWER(TRIM("L_Mode")) IN (
+          'flane 1 entrance',
+          'flane 2 entrance'
+        )
+        OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
       )
     ORDER BY "C_Time" DESC
     `,
@@ -825,7 +823,7 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
   let insertedCount = 0;
 
   for (const row of dedupedRows) {
-    const isSafe = row.initial_status === "SAFE";
+    const status = row.initial_status === "SAFE" ? "SAFE" : "NOT SAFE";
 
     const insertResult = await pool.query(
       `
@@ -870,17 +868,24 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         initial_mode = EXCLUDED.initial_mode,
         initial_tid = EXCLUDED.initial_tid,
         current_status = CASE
-          WHEN EXCLUDED.current_status = 'SAFE' THEN 'SAFE'
+          WHEN EXCLUDED.current_status = 'SAFE'
+            THEN 'SAFE'
           ELSE app.emergency_accountability.current_status
         END,
         marked_safe_at = CASE
           WHEN EXCLUDED.current_status = 'SAFE'
-            THEN COALESCE(app.emergency_accountability.marked_safe_at, EXCLUDED.marked_safe_at)
+            THEN COALESCE(
+              app.emergency_accountability.marked_safe_at,
+              EXCLUDED.marked_safe_at
+            )
           ELSE app.emergency_accountability.marked_safe_at
         END,
         marked_safe_by = CASE
           WHEN EXCLUDED.current_status = 'SAFE'
-            THEN COALESCE(app.emergency_accountability.marked_safe_by, EXCLUDED.marked_safe_by)
+            THEN COALESCE(
+              app.emergency_accountability.marked_safe_by,
+              EXCLUDED.marked_safe_by
+            )
           ELSE app.emergency_accountability.marked_safe_by
         END,
         updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
@@ -893,12 +898,14 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         row.PersonGroup || null,
         row.L_Mode || null,
         row.L_TID || null,
-        isSafe ? "SAFE" : "NOT SAFE",
+        status,
       ]
     );
 
     insertedCount += insertResult.rowCount;
   }
+
+  console.log("✅ SNAPSHOT INSERTED/UPDATED:", insertedCount);
 
   return insertedCount;
 }
@@ -1332,6 +1339,7 @@ async function syncMusteringScansToActiveSession() {
     return {
       success: true,
       updatedCount: 0,
+      insertedCount: 0,
       updatedRows: [],
       message: "No active emergency session",
     };
@@ -1340,64 +1348,94 @@ async function syncMusteringScansToActiveSession() {
   const todayManila = getTodayManila();
 
   const musterResult = await pool.query(
-  `
-  SELECT
-    "L_UID",
-    "Person",
-    "PersonGroup",
-    "L_Mode",
-    "L_TID",
-    "C_Date",
-    "C_Time"
-  FROM "hkvision"."tbhikvision"
-  WHERE "C_Date"::date = $1::date
-    AND TRIM("L_TID") = '1'
-    AND LOWER(TRIM("L_Mode")) IN (
-      'engineering mustering area',
-      'savory mustering area'
+    `
+    WITH latest_mustering AS (
+      SELECT
+        "L_UID",
+        "Person",
+        "PersonGroup",
+        "L_Mode",
+        "L_TID",
+        "C_Date",
+        "C_Time",
+        ROW_NUMBER() OVER (
+          PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
+          ORDER BY "C_Date" DESC, "C_Time" DESC
+        ) AS rn
+      FROM "hkvision"."tbhikvision"
+      WHERE "C_Date"::date = $1::date
+        AND TRIM("L_TID") = '1'
+        AND LOWER(TRIM("L_Mode")) LIKE '%mustering%'
+        AND COALESCE(TRIM("Person"), '') <> ''
     )
-    AND COALESCE(TRIM("Person"), '') <> ''
-  ORDER BY "C_Time" DESC
-  `,
-  [todayManila]
-);
+    SELECT
+      "L_UID",
+      "Person",
+      "PersonGroup",
+      "L_Mode",
+      "L_TID",
+      "C_Date",
+      "C_Time"
+    FROM latest_mustering
+    WHERE rn = 1
+    ORDER BY "C_Time" DESC
+    `,
+    [todayManila]
+  );
 
-  const dedupedMap = new Map();
+  const dedupedRows = dedupeRowsByCanonicalName(musterResult.rows);
 
-  for (const row of musterResult.rows) {
-    const uidKey = String(row?.L_UID || "").trim();
-    const nameKey = buildPersonKey(row?.Person);
-    const key = uidKey || nameKey;
+  let insertedCount = 0;
+  let updatedCount = 0;
+  const changedRows = [];
 
-    if (!key) continue;
-
-    if (!dedupedMap.has(key)) {
-      dedupedMap.set(key, {
-        ...row,
-        person_key: nameKey,
-        l_uid_clean: uidKey || null,
-      });
-    }
-  }
-
-  const updatedRows = [];
-
-  for (const row of dedupedMap.values()) {
+  for (const row of dedupedRows) {
     const result = await pool.query(
       `
-      UPDATE app.emergency_accountability
+      INSERT INTO app.emergency_accountability (
+        session_id,
+        person_key,
+        l_uid,
+        person,
+        persongroup,
+        initial_mode,
+        initial_tid,
+        current_status,
+        marked_safe_at,
+        marked_safe_by,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        'SAFE',
+        (NOW() AT TIME ZONE 'Asia/Manila'),
+        'mustering-scanner',
+        (NOW() AT TIME ZONE 'Asia/Manila'),
+        (NOW() AT TIME ZONE 'Asia/Manila')
+      )
+      ON CONFLICT (session_id, person_key) DO UPDATE
       SET
+        l_uid = EXCLUDED.l_uid,
+        persongroup = EXCLUDED.persongroup,
+        initial_mode = EXCLUDED.initial_mode,
+        initial_tid = EXCLUDED.initial_tid,
         current_status = 'SAFE',
-        marked_safe_at = (NOW() AT TIME ZONE 'Asia/Manila'),
-        marked_safe_by = 'scanner',
+        marked_safe_at = COALESCE(
+          app.emergency_accountability.marked_safe_at,
+          EXCLUDED.marked_safe_at
+        ),
+        marked_safe_by = COALESCE(
+          app.emergency_accountability.marked_safe_by,
+          EXCLUDED.marked_safe_by
+        ),
         updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
-      WHERE session_id = $1
-        AND current_status <> 'SAFE'
-        AND (
-          ($2::text IS NOT NULL AND TRIM(COALESCE(l_uid, '')) = TRIM($2::text))
-          OR
-          (COALESCE($3::text, '') <> '' AND person_key = $3::text)
-        )
       RETURNING
         id,
         session_id,
@@ -1406,18 +1444,39 @@ async function syncMusteringScansToActiveSession() {
         person_key,
         current_status,
         marked_safe_at,
-        marked_safe_by
+        marked_safe_by,
+        xmax = 0 AS inserted
       `,
-      [session.id, row.l_uid_clean, row.person_key]
+      [
+        session.id,
+        row.person_key,
+        row.L_UID || null,
+        row.Person || "Unknown",
+        row.PersonGroup || null,
+        row.L_Mode || null,
+        row.L_TID || null,
+      ]
     );
 
-    updatedRows.push(...result.rows);
+    for (const changed of result.rows) {
+      if (changed.inserted) insertedCount += 1;
+      else updatedCount += 1;
+
+      changedRows.push(changed);
+    }
   }
+
+  console.log("✅ MUSTERING SYNC UPSERT:", {
+    insertedCount,
+    updatedCount,
+    total: changedRows.length,
+  });
 
   return {
     success: true,
-    updatedCount: updatedRows.length,
-    updatedRows,
+    insertedCount,
+    updatedCount,
+    updatedRows: changedRows,
     sessionId: session.id,
   };
 }
