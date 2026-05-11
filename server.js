@@ -82,23 +82,23 @@ async function initDb() {
   `);
 
   await pool.query(`
-    CREATE TABLE IF NOT EXISTS app.rescue_team (
-      id BIGSERIAL PRIMARY KEY,
-      name TEXT NOT NULL,
-      role TEXT NOT NULL,
-      dept TEXT NOT NULL DEFAULT 'EMERGENCY',
-      phone TEXT,
-      email TEXT,
-      time_in TEXT,
-      time_out TEXT,
-      img TEXT,
-      is_active BOOLEAN NOT NULL DEFAULT TRUE,
-      created_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'Asia/Manila'),
-      updated_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'Asia/Manila')
-    );
-  `);
+  CREATE TABLE IF NOT EXISTS app.rescue_team (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL,
+    dept TEXT NOT NULL DEFAULT 'EMERGENCY',
+    phone TEXT,
+    email TEXT,
+    time_in TEXT,
+    time_out TEXT,
+    img TEXT,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'Asia/Manila'),
+    updated_at TIMESTAMP NOT NULL DEFAULT (NOW() AT TIME ZONE 'Asia/Manila')
+  );
+`);
 
-  await pool.query(`
+await pool.query(`
   ALTER TABLE app.rescue_team
   ADD COLUMN IF NOT EXISTS l_uid TEXT;
 `);
@@ -347,14 +347,14 @@ app.get("/api/rescue-team", async (req, res) => {
           "C_Date",
           "C_Time",
           ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
+            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), LOWER(TRIM("Person")))
             ORDER BY "C_Date" DESC, "C_Time" DESC
           ) AS rn
         FROM "hkvision"."tbhikvision"
         WHERE "C_Date"::date = $1::date
           AND COALESCE(TRIM("Person"), '') <> ''
       ),
-      latest_inside_today AS (
+      latest_only AS (
         SELECT
           "L_UID",
           "Person",
@@ -365,11 +365,6 @@ app.get("/api/rescue-team", async (req, res) => {
           "C_Time"
         FROM latest_today
         WHERE rn = 1
-          AND TRIM("L_TID") = '1'
-          AND LOWER(TRIM("L_Mode")) IN (
-            'flane 1 entrance',
-            'flane 2 entrance'
-          )
       )
       SELECT
         rt.id,
@@ -394,9 +389,14 @@ app.get("/api/rescue-team", async (req, res) => {
         ht."C_Date" AS last_date,
         ht."C_Time" AS last_time,
 
-        TRUE AS inside
+        CASE
+          WHEN TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
+            THEN TRUE
+          ELSE FALSE
+        END AS inside
+
       FROM app.rescue_team rt
-      INNER JOIN latest_inside_today ht
+      INNER JOIN latest_only ht
         ON (
           NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
           AND TRIM(rt.l_uid) = TRIM(ht."L_UID")
@@ -406,6 +406,7 @@ app.get("/api/rescue-team", async (req, res) => {
           AND LOWER(TRIM(rt.name)) = LOWER(TRIM(ht."Person"))
         )
       WHERE rt.is_active = TRUE
+        AND TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
         AND (
           $2::text = ''
           OR LOWER(rt.name) LIKE LOWER('%' || $2::text || '%')
@@ -423,13 +424,14 @@ app.get("/api/rescue-team", async (req, res) => {
       result.rows.map((r) => ({
         rescue_id: r.id,
         rescue_l_uid: r.l_uid,
+        rescue_name: r.name,
         hikvision_l_uid: r.hikvision_l_uid,
-        name: r.name,
         hikvision_name: r.hikvision_name,
         date: r.last_date,
         time: r.last_time,
         mode: r.last_mode,
         tid: r.last_tid,
+        inside: r.inside,
       }))
     );
 
@@ -442,7 +444,8 @@ app.get("/api/rescue-team", async (req, res) => {
 
 app.post("/api/rescue-team", async (req, res) => {
   try {
-    const { name, role, dept, phone, email, timeIn, timeOut, img } = req.body;
+    const { name, role, dept, phone, email, timeIn, timeOut, img, lUid } =
+      req.body;
 
     if (!name || !role) {
       return res.status(400).json({ error: "name and role are required" });
@@ -451,6 +454,7 @@ app.post("/api/rescue-team", async (req, res) => {
     const result = await pool.query(
       `
       INSERT INTO app.rescue_team (
+        l_uid,
         name,
         role,
         dept,
@@ -463,9 +467,23 @@ app.post("/api/rescue-team", async (req, res) => {
         created_at,
         updated_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE, (NOW() AT TIME ZONE 'Asia/Manila'), (NOW() AT TIME ZONE 'Asia/Manila'))
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $9,
+        TRUE,
+        (NOW() AT TIME ZONE 'Asia/Manila'),
+        (NOW() AT TIME ZONE 'Asia/Manila')
+      )
       RETURNING
         id,
+        l_uid,
         name,
         role,
         dept,
@@ -477,8 +495,9 @@ app.post("/api/rescue-team", async (req, res) => {
         is_active,
         created_at,
         updated_at
-    `,
+      `,
       [
+        lUid ? String(lUid).trim() : null,
         String(name).trim(),
         String(role).trim(),
         dept ? String(dept).trim() : "EMERGENCY",
@@ -499,10 +518,10 @@ app.post("/api/rescue-team", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 app.put("/api/rescue-team/:id", async (req, res) => {
   try {
     const { id } = req.params;
+
     const {
       name,
       role,
@@ -513,25 +532,28 @@ app.put("/api/rescue-team/:id", async (req, res) => {
       timeOut,
       img,
       isActive,
+      lUid,
     } = req.body;
 
     const result = await pool.query(
       `
       UPDATE app.rescue_team
       SET
-        name = COALESCE($2, name),
-        role = COALESCE($3, role),
-        dept = COALESCE($4, dept),
-        phone = $5,
-        email = $6,
-        time_in = $7,
-        time_out = $8,
-        img = $9,
-        is_active = COALESCE($10, is_active),
+        l_uid = COALESCE($2, l_uid),
+        name = COALESCE($3, name),
+        role = COALESCE($4, role),
+        dept = COALESCE($5, dept),
+        phone = $6,
+        email = $7,
+        time_in = $8,
+        time_out = $9,
+        img = $10,
+        is_active = COALESCE($11, is_active),
         updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
       WHERE id = $1
       RETURNING
         id,
+        l_uid,
         name,
         role,
         dept,
@@ -543,9 +565,10 @@ app.put("/api/rescue-team/:id", async (req, res) => {
         is_active,
         created_at,
         updated_at
-    `,
+      `,
       [
         id,
+        lUid ? String(lUid).trim() : null,
         name ? String(name).trim() : null,
         role ? String(role).trim() : null,
         dept ? String(dept).trim() : null,
@@ -1420,7 +1443,6 @@ app.post("/api/emergency/sync-mustering", async (req, res) => {
 app.get("/api/personnel-search", async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
-    const todayManila = getTodayManila();
 
     if (search.length < 3) {
       return res.json([]);
@@ -1428,7 +1450,7 @@ app.get("/api/personnel-search", async (req, res) => {
 
     const result = await pool.query(
       `
-      WITH latest AS (
+      WITH matched AS (
         SELECT
           "L_UID",
           "Person",
@@ -1438,12 +1460,15 @@ app.get("/api/personnel-search", async (req, res) => {
           "C_Date",
           "C_Time",
           ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
+            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), LOWER(TRIM("Person")))
             ORDER BY "C_Date" DESC, "C_Time" DESC
           ) AS rn
         FROM "hkvision"."tbhikvision"
-        WHERE "C_Date"::date = $1::date
-          AND COALESCE(TRIM("Person"), '') <> ''
+        WHERE COALESCE(TRIM("Person"), '') <> ''
+          AND (
+            LOWER("Person") LIKE LOWER('%' || $1::text || '%')
+            OR LOWER("PersonGroup") LIKE LOWER('%' || $1::text || '%')
+          )
       )
       SELECT
         "L_UID",
@@ -1453,16 +1478,12 @@ app.get("/api/personnel-search", async (req, res) => {
         "L_TID",
         "C_Date",
         "C_Time"
-      FROM latest
+      FROM matched
       WHERE rn = 1
-        AND (
-          LOWER("Person") LIKE LOWER('%' || $2::text || '%')
-          OR LOWER("PersonGroup") LIKE LOWER('%' || $2::text || '%')
-        )
       ORDER BY "Person" ASC
       LIMIT 30
       `,
-      [todayManila, search]
+      [search]
     );
 
     console.log("✅ PERSONNEL SEARCH:", {
@@ -1472,9 +1493,10 @@ app.get("/api/personnel-search", async (req, res) => {
         uid: r.L_UID,
         name: r.Person,
         dept: r.PersonGroup,
+        date: r.C_Date,
+        time: r.C_Time,
         tid: r.L_TID,
         mode: r.L_Mode,
-        time: r.C_Time,
       })),
     });
 
@@ -1484,7 +1506,6 @@ app.get("/api/personnel-search", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 // --------------------------------------------
 // SERVE REACT BUILD
 // --------------------------------------------

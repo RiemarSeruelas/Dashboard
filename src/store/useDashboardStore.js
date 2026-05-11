@@ -710,7 +710,10 @@ clearEmergency: async () => {
           inside: !!row.inside,
           lastMode: row.last_mode ?? "",
           lastTime: row.last_time ?? "",
+          lastDate: row.last_date ?? "",
+          lastTid: row.last_tid ?? "",
           lUid: row.l_uid ?? row.hikvision_l_uid ?? "",
+          hikvisionName: row.hikvision_name ?? "",
         }))
       : [];
 
@@ -721,7 +724,7 @@ clearEmergency: async () => {
   }
 },
 
-  addRescuePersonnel: async (personData) => {
+addRescuePersonnel: async (personData) => {
   try {
     const res = await fetch("/api/rescue-team", {
       method: "POST",
@@ -732,6 +735,7 @@ clearEmergency: async () => {
     });
 
     await parseJsonResponse(res);
+
     await get().fetchRescuePersonnel({
       search: get().rescueSearch,
       dept: get().rescueDepartment,
@@ -741,35 +745,43 @@ clearEmergency: async () => {
   }
 },
 
-  updateRescuePersonnel: async (id, updates) => {
-    try {
-      const res = await fetch(`/api/rescue-team/${id}`, {
-        method: "PUT",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(updates),
-      });
+updateRescuePersonnel: async (id, updates) => {
+  try {
+    const res = await fetch(`/api/rescue-team/${id}`, {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(updates),
+    });
 
-      await parseJsonResponse(res);
-      await get().fetchRescuePersonnel();
-    } catch (err) {
-      console.error("❌ UPDATE RESCUE PERSONNEL ERROR:", err);
-    }
-  },
+    await parseJsonResponse(res);
 
-  removeRescuePersonnel: async (id) => {
-    try {
-      const res = await fetch(`/api/rescue-team/${id}`, {
-        method: "DELETE",
-      });
+    await get().fetchRescuePersonnel({
+      search: get().rescueSearch,
+      dept: get().rescueDepartment,
+    });
+  } catch (err) {
+    console.error("❌ UPDATE RESCUE PERSONNEL ERROR:", err);
+  }
+},
 
-      await parseJsonResponse(res);
-      await get().fetchRescuePersonnel();
-    } catch (err) {
-      console.error("❌ REMOVE RESCUE PERSONNEL ERROR:", err);
-    }
-  },
+removeRescuePersonnel: async (id) => {
+  try {
+    const res = await fetch(`/api/rescue-team/${id}`, {
+      method: "DELETE",
+    });
+
+    await parseJsonResponse(res);
+
+    await get().fetchRescuePersonnel({
+      search: get().rescueSearch,
+      dept: get().rescueDepartment,
+    });
+  } catch (err) {
+    console.error("❌ REMOVE RESCUE PERSONNEL ERROR:", err);
+  }
+},
 
   resetDashboard: () => {
     set({

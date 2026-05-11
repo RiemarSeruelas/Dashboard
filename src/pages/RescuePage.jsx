@@ -294,6 +294,13 @@ export default function RescuePage() {
 
                       {person.lastTime && (
                         <div className="mini-info-text">
+                          Last scan: {person.lastTime}
+                        </div>
+                      )}
+
+                      {person.lastMode && (
+                        <div className="mini-info-text">
+                          Location: {person.lastMode}
                         </div>
                       )}
                     </div>
@@ -304,8 +311,8 @@ export default function RescuePage() {
               <div className="metric-card">
                 <div className="metric-label">No rescue personnel inside</div>
                 <div className="metric-value">
-                  Add names from the left panel, then they will appear here when
-                  currently inside.
+                  Add names from the left panel. They will appear here only when
+                  their latest scan today has L_TID = 1.
                 </div>
               </div>
             )}
@@ -411,7 +418,10 @@ export default function RescuePage() {
                         onClick={() => handleSelectDbPerson(person)}
                       >
                         <span>{person.Person}</span>
-                        <small>{person.PersonGroup || "No department"}</small>
+                        <small>
+                          {person.PersonGroup || "No department"} ·{" "}
+                          {person.L_UID || "No L_UID"}
+                        </small>
                       </button>
                     ))}
                   </div>
@@ -452,9 +462,9 @@ export default function RescuePage() {
                   <div className="mini-info-text">
                     {selectedDept || "No department"}
                   </div>
-                  {selectedLUid && (
-                    <div className="mini-info-text">L_UID: {selectedLUid}</div>
-                  )}
+                  <div className="mini-info-text">
+                    L_UID: {selectedLUid || "No L_UID"}
+                  </div>
                 </div>
               )}
 
@@ -520,6 +530,13 @@ export default function RescuePage() {
                 <div className="detail-label">Status</div>
                 <div className="status-chip done">INSIDE</div>
               </div>
+
+              {selectedPerson.lUid && (
+                <div>
+                  <div className="detail-label">L_UID</div>
+                  <div className="mini-info-text">{selectedPerson.lUid}</div>
+                </div>
+              )}
 
               {selectedPerson.lastMode && (
                 <div>
