@@ -708,11 +708,16 @@ app.get("/api/hikvision-normal", async (req, res) => {
         "C_Time"
       FROM latest
       WHERE rn = 1
-        AND "L_TID" = '1'
-        AND LOWER(TRIM("L_Mode")) IN (
-          'flane 1 entrance',
-          'flane 2 entrance'
-        )
+  AND (
+    (
+      TRIM(COALESCE("L_TID"::text, '')) = '1'
+      AND LOWER(TRIM("L_Mode")) IN (
+        'flane 1 entrance',
+        'flane 2 entrance'
+      )
+    )
+    OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
+  )
       ORDER BY "C_Time" DESC
       `,
       [targetDate]
