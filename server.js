@@ -686,7 +686,7 @@ async function getLatestNormalDbSignature(targetDate) {
     SELECT
       COALESCE(MAX(("C_Date"::text || ' ' || "C_Time"::text)), '') AS latest_signature
     FROM "hkvision"."tbhikvision"
-    WHERE "C_Date" = $1
+    WHERE "C_Date"::date = $1::date
       AND COALESCE(TRIM("Person"), '') <> ''
     `,
     [targetDate]
@@ -746,7 +746,7 @@ app.get("/api/hikvision-normal", async (req, res) => {
             ORDER BY "C_Date" DESC, "C_Time" DESC
           ) AS rn
         FROM "hkvision"."tbhikvision"
-        WHERE "C_Date" = $1
+        WHERE "C_Date"::date = $1::date
           AND COALESCE(TRIM("Person"), '') <> ''
       )
       SELECT
@@ -760,16 +760,14 @@ app.get("/api/hikvision-normal", async (req, res) => {
         "C_Time"
       FROM latest
       WHERE rn = 1
-  AND (
-    (
-      TRIM(COALESCE("L_TID"::text, '')) = '1'
-      AND LOWER(TRIM("L_Mode")) IN (
-        'flane 1 entrance',
-        'flane 2 entrance'
-      )
-    )
-    OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
-  )
+        AND TRIM(COALESCE("L_TID"::text, '')) = '1'
+        AND (
+          LOWER(TRIM("L_Mode")) IN (
+            'flane 1 entrance',
+            'flane 2 entrance'
+          )
+          OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
+        )
       ORDER BY "C_Time" DESC
       `,
       [targetDate]
@@ -863,13 +861,11 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
       END AS initial_status
     FROM latest
     WHERE rn = 1
+      AND TRIM(COALESCE("L_TID"::text, '')) = '1'
       AND (
-        (
-          TRIM(COALESCE("L_TID"::text, '')) = '1'
-          AND LOWER(TRIM("L_Mode")) IN (
-            'flane 1 entrance',
-            'flane 2 entrance'
-          )
+        LOWER(TRIM("L_Mode")) IN (
+          'flane 1 entrance',
+          'flane 2 entrance'
         )
         OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
       )
@@ -1408,7 +1404,7 @@ async function syncMusteringScansToActiveSession() {
 
   const musterResult = await pool.query(
     `
-    WITH latest_mustering AS (
+    WITH latest_today AS (
       SELECT
         "L_UID",
         "Person",
@@ -1423,8 +1419,6 @@ async function syncMusteringScansToActiveSession() {
         ) AS rn
       FROM "hkvision"."tbhikvision"
       WHERE "C_Date"::date = $1::date
-        AND TRIM("L_TID") = '1'
-        AND LOWER(TRIM("L_Mode")) LIKE '%mustering%'
         AND COALESCE(TRIM("Person"), '') <> ''
     )
     SELECT
@@ -1435,8 +1429,10 @@ async function syncMusteringScansToActiveSession() {
       "L_TID",
       "C_Date",
       "C_Time"
-    FROM latest_mustering
+    FROM latest_today
     WHERE rn = 1
+      AND TRIM(COALESCE("L_TID"::text, '')) = '1'
+      AND LOWER(TRIM("L_Mode")) LIKE '%mustering%'
     ORDER BY "C_Time" DESC
     `,
     [todayManila]
