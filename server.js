@@ -330,82 +330,119 @@ async function getActiveSession() {
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
+    const targetDate = getTodayManila();
     const search = String(req.query.search || "").trim();
 
     const result = await pool.query(
       `
-      SELECT
-        rt.id,
-        rt.l_uid,
-        rt.name,
-        rt.role,
-        rt.dept,
-        rt.phone,
-        rt.email,
-        rt.time_in,
-        rt.time_out,
-        rt.img,
-        rt.is_active,
-        rt.created_at,
-        rt.updated_at,
-
-        ht."L_UID" AS hikvision_l_uid,
-        ht."Person" AS hikvision_name,
-        ht."PersonGroup" AS hikvision_group,
-        ht."L_Mode" AS last_mode,
-        ht."L_TID" AS last_tid,
-        ht."C_Date" AS last_date,
-        ht."C_Time" AS last_time,
-
-        (NOW() AT TIME ZONE 'Asia/Manila')::date AS filter_date,
-
-        TRUE AS inside
-
-      FROM app.rescue_team rt
-
-      INNER JOIN LATERAL (
+      WITH active_rescue AS (
         SELECT
+          id,
+          l_uid,
+          name,
+          role,
+          dept,
+          phone,
+          email,
+          time_in,
+          time_out,
+          img,
+          is_active,
+          created_at,
+          updated_at
+        FROM app.rescue_team
+        WHERE is_active = TRUE
+      ),
+      matched_scans AS (
+        SELECT
+          rt.id AS rescue_id,
+          rt.l_uid AS rescue_l_uid,
+          rt.name AS rescue_name,
+          rt.role,
+          rt.dept,
+          rt.phone,
+          rt.email,
+          rt.time_in,
+          rt.time_out,
+          rt.img,
+          rt.is_active,
+          rt.created_at,
+          rt.updated_at,
+
           h."L_UID",
           h."Person",
           h."PersonGroup",
           h."L_Mode",
           h."L_TID",
           h."C_Date",
-          h."C_Time"
-        FROM "hkvision"."tbhikvision" h
-        WHERE h."C_Date"::date = (NOW() AT TIME ZONE 'Asia/Manila')::date
-          AND COALESCE(TRIM(h."Person"), '') <> ''
-          AND (
-            (
-              NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
-              AND TRIM(h."L_UID") = TRIM(rt.l_uid)
-            )
-            OR
-            (
-              NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NULL
-              AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
-            )
+          h."C_Time",
+
+          ROW_NUMBER() OVER (
+            PARTITION BY rt.id
+            ORDER BY h."C_Date" DESC, h."C_Time" DESC
+          ) AS rn
+        FROM active_rescue rt
+        INNER JOIN "hkvision"."tbhikvision" h
+          ON (
+            NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
+            AND TRIM(h."L_UID") = TRIM(rt.l_uid)
           )
-        ORDER BY h."C_Date" DESC, h."C_Time" DESC
-        LIMIT 1
-      ) ht ON TRUE
+          OR (
+            NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NULL
+            AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
+          )
+        WHERE COALESCE(TRIM(h."Person"), '') <> ''
+          AND (
+            h."C_Date"::date = $1::date
+            OR TO_CHAR(h."C_Date"::timestamp, 'YYYY-MM-DD') = $1::text
+          )
+      ),
+      latest_per_rescue AS (
+        SELECT *
+        FROM matched_scans
+        WHERE rn = 1
+      )
+      SELECT
+        rescue_id AS id,
+        rescue_l_uid AS l_uid,
+        rescue_name AS name,
+        role,
+        dept,
+        phone,
+        email,
+        time_in,
+        time_out,
+        img,
+        is_active,
+        created_at,
+        updated_at,
 
-      WHERE rt.is_active = TRUE
-        AND ht."C_Date"::date = (NOW() AT TIME ZONE 'Asia/Manila')::date
-        AND TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
+        "L_UID" AS hikvision_l_uid,
+        "Person" AS hikvision_name,
+        "PersonGroup" AS hikvision_group,
+        "L_Mode" AS last_mode,
+        "L_TID" AS last_tid,
+        "C_Date" AS last_date,
+        "C_Time" AS last_time,
+
+        $1::text AS filter_date,
+        TRUE AS inside
+
+      FROM latest_per_rescue
+      WHERE TRIM(COALESCE("L_TID"::text, '')) = '1'
         AND (
-          $1::text = ''
-          OR LOWER(rt.name) LIKE LOWER('%' || $1::text || '%')
-          OR LOWER(rt.role) LIKE LOWER('%' || $1::text || '%')
-          OR LOWER(rt.dept) LIKE LOWER('%' || $1::text || '%')
+          $2::text = ''
+          OR LOWER(rescue_name) LIKE LOWER('%' || $2::text || '%')
+          OR LOWER(role) LIKE LOWER('%' || $2::text || '%')
+          OR LOWER(dept) LIKE LOWER('%' || $2::text || '%')
         )
-
-      ORDER BY rt.name ASC
+      ORDER BY rescue_name ASC
       `,
-      [search]
+      [targetDate, search]
     );
 
-    console.log("✅ RESCUE ROUTE VERSION: STRICT_TODAY_LATEST_TID_1");
+    console.log("✅ RESCUE ROUTE VERSION: TARGET_DATE_LATEST_PER_RESCUE");
+    console.log("✅ TARGET DATE:", targetDate);
     console.log("✅ RESCUE INSIDE COUNT:", result.rows.length);
     console.log(
       "✅ RESCUE ROWS:",
