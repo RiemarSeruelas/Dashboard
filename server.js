@@ -334,35 +334,6 @@ app.get("/api/rescue-team", async (req, res) => {
 
     const result = await pool.query(
       `
-      WITH latest_today AS (
-        SELECT
-          "L_UID",
-          "Person",
-          "PersonGroup",
-          "L_Mode",
-          "L_TID",
-          "C_Date",
-          "C_Time",
-          ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), LOWER(TRIM("Person")))
-            ORDER BY "C_Date" DESC, "C_Time" DESC
-          ) AS rn
-        FROM "hkvision"."tbhikvision"
-        WHERE "C_Date"::date = (NOW() AT TIME ZONE 'Asia/Manila')::date
-          AND COALESCE(TRIM("Person"), '') <> ''
-      ),
-      latest_only AS (
-        SELECT
-          "L_UID",
-          "Person",
-          "PersonGroup",
-          "L_Mode",
-          "L_TID",
-          "C_Date",
-          "C_Time"
-        FROM latest_today
-        WHERE rn = 1
-      )
       SELECT
         rt.id,
         rt.l_uid,
@@ -385,55 +356,70 @@ app.get("/api/rescue-team", async (req, res) => {
         ht."L_TID" AS last_tid,
         ht."C_Date" AS last_date,
         ht."C_Time" AS last_time,
+
         (NOW() AT TIME ZONE 'Asia/Manila')::date AS filter_date,
 
-        CASE
-          WHEN TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
-            THEN TRUE
-          ELSE FALSE
-        END AS inside
+        TRUE AS inside
 
       FROM app.rescue_team rt
-      INNER JOIN latest_only ht
-        ON (
-          NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
-          AND TRIM(rt.l_uid) = TRIM(ht."L_UID")
-        )
-        OR (
-          NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NULL
-          AND LOWER(TRIM(rt.name)) = LOWER(TRIM(ht."Person"))
-        )
+
+      INNER JOIN LATERAL (
+        SELECT
+          h."L_UID",
+          h."Person",
+          h."PersonGroup",
+          h."L_Mode",
+          h."L_TID",
+          h."C_Date",
+          h."C_Time"
+        FROM "hkvision"."tbhikvision" h
+        WHERE h."C_Date"::date = (NOW() AT TIME ZONE 'Asia/Manila')::date
+          AND COALESCE(TRIM(h."Person"), '') <> ''
+          AND (
+            (
+              NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
+              AND TRIM(h."L_UID") = TRIM(rt.l_uid)
+            )
+            OR
+            (
+              NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NULL
+              AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
+            )
+          )
+        ORDER BY h."C_Date" DESC, h."C_Time" DESC
+        LIMIT 1
+      ) ht ON TRUE
+
       WHERE rt.is_active = TRUE
-        AND TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
         AND ht."C_Date"::date = (NOW() AT TIME ZONE 'Asia/Manila')::date
+        AND TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
         AND (
           $1::text = ''
           OR LOWER(rt.name) LIKE LOWER('%' || $1::text || '%')
           OR LOWER(rt.role) LIKE LOWER('%' || $1::text || '%')
           OR LOWER(rt.dept) LIKE LOWER('%' || $1::text || '%')
         )
+
       ORDER BY rt.name ASC
       `,
       [search]
     );
 
-    console.log("✅ RESCUE FILTER DATE SQL:", new Date().toLocaleString("en-US", {
-      timeZone: "Asia/Manila",
-    }));
-
+    console.log("✅ RESCUE ROUTE VERSION: STRICT_TODAY_LATEST_TID_1");
     console.log("✅ RESCUE INSIDE COUNT:", result.rows.length);
     console.log(
       "✅ RESCUE ROWS:",
       result.rows.map((r) => ({
         rescue_id: r.id,
         rescue_name: r.name,
+        rescue_l_uid: r.l_uid,
         hikvision_name: r.hikvision_name,
-        date: r.last_date,
+        hikvision_l_uid: r.hikvision_l_uid,
         filter_date: r.filter_date,
-        time: r.last_time,
-        mode: r.last_mode,
-        tid: r.last_tid,
-        inside: r.inside,
+        last_date: r.last_date,
+        last_time: r.last_time,
+        last_mode: r.last_mode,
+        last_tid: r.last_tid,
       }))
     );
 
