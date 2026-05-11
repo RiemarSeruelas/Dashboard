@@ -330,10 +330,7 @@ async function getActiveSession() {
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
-    const todayManila = getTodayManila();
     const search = String(req.query.search || "").trim();
-
-    console.log("✅ RESCUE FILTER DATE:", todayManila);
 
     const result = await pool.query(
       `
@@ -351,7 +348,7 @@ app.get("/api/rescue-team", async (req, res) => {
             ORDER BY "C_Date" DESC, "C_Time" DESC
           ) AS rn
         FROM "hkvision"."tbhikvision"
-        WHERE "C_Date"::date = $1::date
+        WHERE "C_Date"::date = (NOW() AT TIME ZONE 'Asia/Manila')::date
           AND COALESCE(TRIM("Person"), '') <> ''
       ),
       latest_only AS (
@@ -388,6 +385,7 @@ app.get("/api/rescue-team", async (req, res) => {
         ht."L_TID" AS last_tid,
         ht."C_Date" AS last_date,
         ht."C_Time" AS last_time,
+        (NOW() AT TIME ZONE 'Asia/Manila')::date AS filter_date,
 
         CASE
           WHEN TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
@@ -407,27 +405,31 @@ app.get("/api/rescue-team", async (req, res) => {
         )
       WHERE rt.is_active = TRUE
         AND TRIM(COALESCE(ht."L_TID"::text, '')) = '1'
+        AND ht."C_Date"::date = (NOW() AT TIME ZONE 'Asia/Manila')::date
         AND (
-          $2::text = ''
-          OR LOWER(rt.name) LIKE LOWER('%' || $2::text || '%')
-          OR LOWER(rt.role) LIKE LOWER('%' || $2::text || '%')
-          OR LOWER(rt.dept) LIKE LOWER('%' || $2::text || '%')
+          $1::text = ''
+          OR LOWER(rt.name) LIKE LOWER('%' || $1::text || '%')
+          OR LOWER(rt.role) LIKE LOWER('%' || $1::text || '%')
+          OR LOWER(rt.dept) LIKE LOWER('%' || $1::text || '%')
         )
       ORDER BY rt.name ASC
       `,
-      [todayManila, search]
+      [search]
     );
+
+    console.log("✅ RESCUE FILTER DATE SQL:", new Date().toLocaleString("en-US", {
+      timeZone: "Asia/Manila",
+    }));
 
     console.log("✅ RESCUE INSIDE COUNT:", result.rows.length);
     console.log(
       "✅ RESCUE ROWS:",
       result.rows.map((r) => ({
         rescue_id: r.id,
-        rescue_l_uid: r.l_uid,
         rescue_name: r.name,
-        hikvision_l_uid: r.hikvision_l_uid,
         hikvision_name: r.hikvision_name,
         date: r.last_date,
+        filter_date: r.filter_date,
         time: r.last_time,
         mode: r.last_mode,
         tid: r.last_tid,
