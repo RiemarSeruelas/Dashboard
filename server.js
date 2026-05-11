@@ -99,6 +99,16 @@ async function initDb() {
   `);
 
   await pool.query(`
+  ALTER TABLE app.rescue_team
+  ADD COLUMN IF NOT EXISTS l_uid TEXT;
+`);
+
+await pool.query(`
+  CREATE INDEX IF NOT EXISTS idx_rescue_team_l_uid
+  ON app.rescue_team (l_uid);
+`);
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS app.emergency_sessions (
       id BIGSERIAL PRIMARY KEY,
       session_key TEXT NOT NULL UNIQUE,
@@ -174,12 +184,18 @@ async function initDb() {
 // HELPERS
 // --------------------------------------------
 function getTodayManila() {
-  return new Intl.DateTimeFormat("en-CA", {
+  const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Manila",
     year: "numeric",
     month: "2-digit",
     day: "2-digit",
-  }).format(new Date());
+  }).formatToParts(new Date());
+
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
 }
 
 function getManilaNowSqlString() {
@@ -314,24 +330,108 @@ async function getActiveSession() {
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
-    const result = await pool.query(`
+    const todayManila = getTodayManila();
+    const search = String(req.query.search || "").trim();
+
+    console.log("✅ RESCUE FILTER DATE:", todayManila);
+
+    const result = await pool.query(
+      `
+      WITH latest_today AS (
+        SELECT
+          "L_UID",
+          "Person",
+          "PersonGroup",
+          "L_Mode",
+          "L_TID",
+          "C_Date",
+          "C_Time",
+          ROW_NUMBER() OVER (
+            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
+            ORDER BY "C_Date" DESC, "C_Time" DESC
+          ) AS rn
+        FROM "hkvision"."tbhikvision"
+        WHERE "C_Date"::date = $1::date
+          AND COALESCE(TRIM("Person"), '') <> ''
+      ),
+      latest_inside_today AS (
+        SELECT
+          "L_UID",
+          "Person",
+          "PersonGroup",
+          "L_Mode",
+          "L_TID",
+          "C_Date",
+          "C_Time"
+        FROM latest_today
+        WHERE rn = 1
+          AND TRIM("L_TID") = '1'
+          AND LOWER(TRIM("L_Mode")) IN (
+            'flane 1 entrance',
+            'flane 2 entrance'
+          )
+      )
       SELECT
-        id,
-        name,
-        role,
-        dept,
-        phone,
-        email,
-        time_in,
-        time_out,
-        img,
-        is_active,
-        created_at,
-        updated_at
-      FROM app.rescue_team
-      WHERE is_active = TRUE
-      ORDER BY name ASC
-    `);
+        rt.id,
+        rt.l_uid,
+        rt.name,
+        rt.role,
+        rt.dept,
+        rt.phone,
+        rt.email,
+        rt.time_in,
+        rt.time_out,
+        rt.img,
+        rt.is_active,
+        rt.created_at,
+        rt.updated_at,
+
+        ht."L_UID" AS hikvision_l_uid,
+        ht."Person" AS hikvision_name,
+        ht."PersonGroup" AS hikvision_group,
+        ht."L_Mode" AS last_mode,
+        ht."L_TID" AS last_tid,
+        ht."C_Date" AS last_date,
+        ht."C_Time" AS last_time,
+
+        TRUE AS inside
+      FROM app.rescue_team rt
+      INNER JOIN latest_inside_today ht
+        ON (
+          NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NOT NULL
+          AND TRIM(rt.l_uid) = TRIM(ht."L_UID")
+        )
+        OR (
+          NULLIF(TRIM(COALESCE(rt.l_uid, '')), '') IS NULL
+          AND LOWER(TRIM(rt.name)) = LOWER(TRIM(ht."Person"))
+        )
+      WHERE rt.is_active = TRUE
+        AND (
+          $2::text = ''
+          OR LOWER(rt.name) LIKE LOWER('%' || $2::text || '%')
+          OR LOWER(rt.role) LIKE LOWER('%' || $2::text || '%')
+          OR LOWER(rt.dept) LIKE LOWER('%' || $2::text || '%')
+        )
+      ORDER BY rt.name ASC
+      `,
+      [todayManila, search]
+    );
+
+    console.log("✅ RESCUE INSIDE COUNT:", result.rows.length);
+    console.log(
+      "✅ RESCUE ROWS:",
+      result.rows.map((r) => ({
+        rescue_id: r.id,
+        rescue_l_uid: r.l_uid,
+        hikvision_l_uid: r.hikvision_l_uid,
+        name: r.name,
+        hikvision_name: r.hikvision_name,
+        date: r.last_date,
+        time: r.last_time,
+        mode: r.last_mode,
+        tid: r.last_tid,
+      }))
+    );
 
     res.json(result.rows);
   } catch (err) {
@@ -1314,6 +1414,74 @@ app.post("/api/emergency/sync-mustering", async (req, res) => {
     });
   } finally {
     musteringSyncInFlight = false;
+  }
+});
+
+app.get("/api/personnel-search", async (req, res) => {
+  try {
+    const search = String(req.query.search || "").trim();
+    const todayManila = getTodayManila();
+
+    if (search.length < 3) {
+      return res.json([]);
+    }
+
+    const result = await pool.query(
+      `
+      WITH latest AS (
+        SELECT
+          "L_UID",
+          "Person",
+          "PersonGroup",
+          "L_Mode",
+          "L_TID",
+          "C_Date",
+          "C_Time",
+          ROW_NUMBER() OVER (
+            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
+            ORDER BY "C_Date" DESC, "C_Time" DESC
+          ) AS rn
+        FROM "hkvision"."tbhikvision"
+        WHERE "C_Date"::date = $1::date
+          AND COALESCE(TRIM("Person"), '') <> ''
+      )
+      SELECT
+        "L_UID",
+        "Person",
+        "PersonGroup",
+        "L_Mode",
+        "L_TID",
+        "C_Date",
+        "C_Time"
+      FROM latest
+      WHERE rn = 1
+        AND (
+          LOWER("Person") LIKE LOWER('%' || $2::text || '%')
+          OR LOWER("PersonGroup") LIKE LOWER('%' || $2::text || '%')
+        )
+      ORDER BY "Person" ASC
+      LIMIT 30
+      `,
+      [todayManila, search]
+    );
+
+    console.log("✅ PERSONNEL SEARCH:", {
+      search,
+      count: result.rows.length,
+      rows: result.rows.map((r) => ({
+        uid: r.L_UID,
+        name: r.Person,
+        dept: r.PersonGroup,
+        tid: r.L_TID,
+        mode: r.L_Mode,
+        time: r.C_Time,
+      })),
+    });
+
+    res.json(result.rows);
+  } catch (err) {
+    console.error("❌ PERSONNEL SEARCH ERROR:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 

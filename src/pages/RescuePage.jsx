@@ -27,23 +27,28 @@ export default function RescuePage() {
   const emergencyActive = useDashboardStore((s) => s.emergencyActive);
   const triggerEmergency = useDashboardStore((s) => s.triggerEmergency);
   const clearEmergency = useDashboardStore((s) => s.clearEmergency);
-  const emergencyActionLoading = useDashboardStore((s) => s.emergencyActionLoading);
+  const emergencyActionLoading = useDashboardStore(
+    (s) => s.emergencyActionLoading
+  );
 
   const [showAddModal, setShowAddModal] = useState(false);
+
   const [searchInput, setSearchInput] = useState("");
   const [phoneInput, setPhoneInput] = useState("");
   const [selectedRole, setSelectedRole] = useState(DEFAULT_ROLE);
-  const [dbResults, setDbResults] = useState([]);
   const [selectedName, setSelectedName] = useState("");
   const [selectedDept, setSelectedDept] = useState("");
+  const [selectedLUid, setSelectedLUid] = useState("");
+
+  const [dbResults, setDbResults] = useState([]);
   const [loadingSearch, setLoadingSearch] = useState(false);
+
   const [roleFilter, setRoleFilter] = useState("ALL");
+  const [listSearch, setListSearch] = useState("");
 
   const [selectedPerson, setSelectedPerson] = useState(null);
   const [editPhone, setEditPhone] = useState("");
   const [editRole, setEditRole] = useState(DEFAULT_ROLE);
-
-  const [listSearch, setListSearch] = useState("");
 
   useEffect(() => {
     fetchRescuePersonnel?.();
@@ -65,7 +70,27 @@ export default function RescuePage() {
           `/api/personnel-search?search=${encodeURIComponent(trimmed)}`
         );
 
-        const data = await res.json();
+        const text = await res.text();
+
+        let data = [];
+        try {
+          data = text ? JSON.parse(text) : [];
+        } catch {
+          console.error(
+            "❌ PERSONNEL SEARCH NON-JSON RESPONSE:",
+            text.slice(0, 300)
+          );
+          setDbResults([]);
+          return;
+        }
+
+        if (!res.ok) {
+          console.error("❌ PERSONNEL SEARCH HTTP ERROR:", data);
+          setDbResults([]);
+          return;
+        }
+
+        console.log("✅ PERSONNEL SEARCH RESULTS:", data);
         setDbResults(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error("❌ PERSONNEL SEARCH ERROR:", err);
@@ -78,20 +103,19 @@ export default function RescuePage() {
     return () => clearTimeout(timer);
   }, [searchInput, selectedName]);
 
-    const rescueTeam = useMemo(() => {
+  const rescueTeam = useMemo(() => {
     const rows = Array.isArray(rescuePersonnel) ? rescuePersonnel : [];
     const search = listSearch.trim().toLowerCase();
 
-     return rows.filter((p) => {
-       const nameOk =
-       !search || String(p.name || "").toLowerCase().includes(search);
+    return rows.filter((p) => {
+      const nameOk =
+        !search || String(p.name || "").toLowerCase().includes(search);
 
-       const roleOk =
-        roleFilter === "ALL" || String(p.role || "") === roleFilter;
+      const roleOk = roleFilter === "ALL" || String(p.role || "") === roleFilter;
 
       return nameOk && roleOk;
-  });
-}, [rescuePersonnel, listSearch, roleFilter]);
+    });
+  }, [rescuePersonnel, listSearch, roleFilter]);
 
   const clearAddForm = () => {
     setSearchInput("");
@@ -99,6 +123,7 @@ export default function RescuePage() {
     setSelectedRole(DEFAULT_ROLE);
     setSelectedName("");
     setSelectedDept("");
+    setSelectedLUid("");
     setDbResults([]);
     setLoadingSearch(false);
   };
@@ -111,9 +136,11 @@ export default function RescuePage() {
   const handleSelectDbPerson = (person) => {
     const name = person?.Person || "";
     const dept = person?.PersonGroup || "";
+    const lUid = person?.L_UID || "";
 
     setSelectedName(name);
     setSelectedDept(dept);
+    setSelectedLUid(lUid);
     setSearchInput(name);
     setDbResults([]);
   };
@@ -124,6 +151,7 @@ export default function RescuePage() {
     if (!selectedName.trim()) return;
 
     await addRescuePersonnel?.({
+      lUid: selectedLUid,
       name: selectedName.trim(),
       dept: selectedDept || "EMERGENCY",
       role: selectedRole,
@@ -220,26 +248,26 @@ export default function RescuePage() {
           <div className="table-title">Inside Rescue Personnel</div>
 
           <div className="rescue-list-toolbar">
-  <input
-    className="styled-input"
-    value={listSearch}
-    onChange={(e) => setListSearch(e.target.value)}
-    placeholder="Search rescue names..."
-  />
+            <input
+              className="styled-input"
+              value={listSearch}
+              onChange={(e) => setListSearch(e.target.value)}
+              placeholder="Search rescue names..."
+            />
 
-  <select
-    className="styled-input"
-    value={roleFilter}
-    onChange={(e) => setRoleFilter(e.target.value)}
-  >
-    <option value="ALL">All Roles</option>
-    {ROLE_OPTIONS.map((role) => (
-      <option key={role} value={role}>
-        {role}
-      </option>
-    ))}
-  </select>
-</div>
+            <select
+              className="styled-input"
+              value={roleFilter}
+              onChange={(e) => setRoleFilter(e.target.value)}
+            >
+              <option value="ALL">All Roles</option>
+              {ROLE_OPTIONS.map((role) => (
+                <option key={role} value={role}>
+                  {role}
+                </option>
+              ))}
+            </select>
+          </div>
 
           <div className="rescue-grid">
             {rescueTeam.length > 0 ? (
@@ -256,16 +284,18 @@ export default function RescuePage() {
                       <div className="rescue-name">{person.name}</div>
 
                       <div className="rescue-meta-row">
-                        <span className="rescue-badge">
-                          {person.role}
-                        </span>
-
+                        <span className="rescue-badge">{person.role}</span>
                         <span className="status-chip done">INSIDE</span>
                       </div>
 
                       <div className="rescue-contact">
                         {person.phone || "No phone number"}
                       </div>
+
+                      {person.lastTime && (
+                        <div className="mini-info-text">
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -304,9 +334,7 @@ export default function RescuePage() {
                   </div>
                 ))
               ) : (
-                <div className="mini-info-text">
-                  No rescue personnel inside.
-                </div>
+                <div className="mini-info-text">No rescue personnel inside.</div>
               )}
             </div>
           </div>
@@ -342,6 +370,7 @@ export default function RescuePage() {
                       setSearchInput(value);
                       setSelectedName("");
                       setSelectedDept("");
+                      setSelectedLUid("");
 
                       if (value.trim().length < 3) {
                         setDbResults([]);
@@ -359,6 +388,7 @@ export default function RescuePage() {
                         setSearchInput("");
                         setSelectedName("");
                         setSelectedDept("");
+                        setSelectedLUid("");
                         setDbResults([]);
                       }}
                     >
@@ -377,7 +407,7 @@ export default function RescuePage() {
                       <button
                         type="button"
                         className="rescue-search-result"
-                        key={`${person.Person}-${index}`}
+                        key={`${person.L_UID || person.Person}-${index}`}
                         onClick={() => handleSelectDbPerson(person)}
                       >
                         <span>{person.Person}</span>
@@ -386,9 +416,16 @@ export default function RescuePage() {
                     ))}
                   </div>
                 )}
-              </div>
 
-              
+                {!selectedName &&
+                  !loadingSearch &&
+                  searchInput.trim().length >= 3 &&
+                  dbResults.length === 0 && (
+                    <div className="mini-info-text">
+                      No personnel found for this search.
+                    </div>
+                  )}
+              </div>
 
               <select
                 className="styled-input"
@@ -415,6 +452,9 @@ export default function RescuePage() {
                   <div className="mini-info-text">
                     {selectedDept || "No department"}
                   </div>
+                  {selectedLUid && (
+                    <div className="mini-info-text">L_UID: {selectedLUid}</div>
+                  )}
                 </div>
               )}
 
@@ -480,6 +520,20 @@ export default function RescuePage() {
                 <div className="detail-label">Status</div>
                 <div className="status-chip done">INSIDE</div>
               </div>
+
+              {selectedPerson.lastMode && (
+                <div>
+                  <div className="detail-label">Last Location</div>
+                  <div className="mini-info-text">{selectedPerson.lastMode}</div>
+                </div>
+              )}
+
+              {selectedPerson.lastTime && (
+                <div>
+                  <div className="detail-label">Last Scan Time</div>
+                  <div className="mini-info-text">{selectedPerson.lastTime}</div>
+                </div>
+              )}
             </div>
 
             <div className="rescue-actions" style={{ marginTop: 16 }}>

@@ -682,11 +682,12 @@ clearEmergency: async () => {
     }
   },
 
-  fetchRescuePersonnel: async ({ search = "" } = {}) => {
+ fetchRescuePersonnel: async ({ search = "", dept = "ALL" } = {}) => {
   try {
     const params = new URLSearchParams();
 
     if (search) params.append("search", search);
+    if (dept && dept !== "ALL") params.append("dept", dept);
 
     const url = params.toString()
       ? `/api/rescue-team?${params.toString()}`
@@ -699,15 +700,17 @@ clearEmergency: async () => {
       ? rows.map((row) => ({
           id: row.id,
           personKey: `rescue|${row.id}`,
-          name: row.name ?? "Unknown",
-          dept: row.dept ?? "Unknown Department",
+          name: row.name ?? row.hikvision_name ?? "Unknown",
+          dept: row.dept ?? row.hikvision_group ?? "Unknown Department",
           role: row.role ?? "Responder",
-          status: "INSIDE",
+          status: row.inside ? "INSIDE" : "OUTSIDE",
           isRescue: true,
           phone: row.phone ?? "",
+          email: row.email ?? "",
           inside: !!row.inside,
           lastMode: row.last_mode ?? "",
           lastTime: row.last_time ?? "",
+          lUid: row.l_uid ?? row.hikvision_l_uid ?? "",
         }))
       : [];
 
@@ -719,21 +722,24 @@ clearEmergency: async () => {
 },
 
   addRescuePersonnel: async (personData) => {
-    try {
-      const res = await fetch("/api/rescue-team", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(personData),
-      });
+  try {
+    const res = await fetch("/api/rescue-team", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(personData),
+    });
 
-      await parseJsonResponse(res);
-      await get().fetchRescuePersonnel();
-    } catch (err) {
-      console.error("❌ ADD RESCUE PERSONNEL ERROR:", err);
-    }
-  },
+    await parseJsonResponse(res);
+    await get().fetchRescuePersonnel({
+      search: get().rescueSearch,
+      dept: get().rescueDepartment,
+    });
+  } catch (err) {
+    console.error("❌ ADD RESCUE PERSONNEL ERROR:", err);
+  }
+},
 
   updateRescuePersonnel: async (id, updates) => {
     try {
