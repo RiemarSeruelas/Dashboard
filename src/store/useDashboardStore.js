@@ -2,6 +2,31 @@ import { create } from "zustand";
 
 const PAGE_SIZE = 20;
 
+function getTodayManilaClient() {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Manila",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date());
+
+  const year = parts.find((p) => p.type === "year")?.value;
+  const month = parts.find((p) => p.type === "month")?.value;
+  const day = parts.find((p) => p.type === "day")?.value;
+
+  return `${year}-${month}-${day}`;
+}
+
+function normalizeDateOnly(value) {
+  if (!value) return "";
+
+  // Handles values like:
+  // 2026-05-11
+  // 2026-05-11T00:00:00.000Z
+  // 2026-05-11 00:00:00
+  return String(value).slice(0, 10);
+}
+
 function normalizePerson(row, index = 0, isEmergency = false) {
   if (isEmergency) {
     return {
@@ -689,33 +714,82 @@ clearEmergency: async () => {
     if (search) params.append("search", search);
     if (dept && dept !== "ALL") params.append("dept", dept);
 
-    const url = params.toString()
-      ? `/api/rescue-team?${params.toString()}`
-      : "/api/rescue-team";
+    // cache buster para sure hindi stale browser/Vite/proxy response
+    params.append("_t", String(Date.now()));
 
-    const res = await fetch(url);
+    const url = `/api/rescue-team?${params.toString()}`;
+
+    console.log("🔥 FETCHING RESCUE TEAM FROM:", url);
+
+    const res = await fetch(url, {
+      cache: "no-store",
+      headers: {
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      },
+    });
+
     const rows = await parseJsonResponse(res);
 
-    const mapped = Array.isArray(rows)
-      ? rows.map((row) => ({
-          id: row.id,
-          personKey: `rescue|${row.id}`,
-          name: row.name ?? row.hikvision_name ?? "Unknown",
-          dept: row.dept ?? row.hikvision_group ?? "Unknown Department",
-          role: row.role ?? "Responder",
-          status: row.inside ? "INSIDE" : "OUTSIDE",
-          isRescue: true,
-          phone: row.phone ?? "",
-          email: row.email ?? "",
-          inside: !!row.inside,
-          lastMode: row.last_mode ?? "",
-          lastTime: row.last_time ?? "",
-          lastDate: row.last_date ?? "",
-          lastTid: row.last_tid ?? "",
-          lUid: row.l_uid ?? row.hikvision_l_uid ?? "",
-          hikvisionName: row.hikvision_name ?? "",
-        }))
+    const todayManila = getTodayManilaClient();
+
+    console.log("🔥 RESCUE RAW ROWS FROM BACKEND:", rows);
+    console.log("🔥 FRONTEND TODAY MANILA:", todayManila);
+
+    const safeRows = Array.isArray(rows)
+      ? rows.filter((row) => {
+          const rowDate = normalizeDateOnly(row.last_date);
+          const rowTid = String(row.last_tid ?? "").trim();
+          const rowMode = String(row.last_mode ?? "").trim().toLowerCase();
+
+          const isToday = rowDate === todayManila;
+          const isIn = rowTid === "1";
+          const isAllowedLocation =
+            rowMode === "flane 1 entrance" ||
+            rowMode === "flane 2 entrance" ||
+            rowMode.includes("mustering");
+
+          const keep = isToday && isIn && isAllowedLocation;
+
+          if (!keep) {
+            console.warn("🚫 FRONTEND BLOCKED BAD RESCUE ROW:", {
+              name: row.name,
+              hikvisionName: row.hikvision_name,
+              lastDate: row.last_date,
+              rowDate,
+              todayManila,
+              lastTid: row.last_tid,
+              lastMode: row.last_mode,
+              isToday,
+              isIn,
+              isAllowedLocation,
+            });
+          }
+
+          return keep;
+        })
       : [];
+
+    const mapped = safeRows.map((row) => ({
+      id: row.id,
+      personKey: `rescue|${row.id}`,
+      name: row.name ?? row.hikvision_name ?? "Unknown",
+      dept: row.dept ?? row.hikvision_group ?? "Unknown Department",
+      role: row.role ?? "Responder",
+      status: row.inside ? "INSIDE" : "OUTSIDE",
+      isRescue: true,
+      phone: row.phone ?? "",
+      email: row.email ?? "",
+      inside: !!row.inside,
+      lastMode: row.last_mode ?? "",
+      lastTime: row.last_time ?? "",
+      lastDate: row.last_date ?? "",
+      lastTid: row.last_tid ?? "",
+      lUid: row.l_uid ?? row.hikvision_l_uid ?? "",
+      hikvisionName: row.hikvision_name ?? "",
+    }));
+
+    console.log("✅ RESCUE SAFE ROWS DISPLAYED:", mapped);
 
     set({ rescuePersonnel: mapped });
   } catch (err) {
