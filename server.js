@@ -806,11 +806,13 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
       END AS initial_status
     FROM latest
     WHERE rn = 1
-      AND TRIM("L_TID") = '1'
       AND (
-        LOWER(TRIM("L_Mode")) IN (
-          'flane 1 entrance',
-          'flane 2 entrance'
+        (
+          TRIM(COALESCE("L_TID"::text, '')) = '1'
+          AND LOWER(TRIM("L_Mode")) IN (
+            'flane 1 entrance',
+            'flane 2 entrance'
+          )
         )
         OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
       )
