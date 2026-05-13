@@ -330,12 +330,15 @@ async function getActiveSession() {
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
-    const targetDate = getTodayManila();
     const search = String(req.query.search || "").trim();
 
     const result = await pool.query(
       `
-      WITH rescue AS (
+      WITH server_date AS (
+        SELECT (NOW() AT TIME ZONE 'Asia/Manila')::date AS today_manila
+      ),
+
+      rescue AS (
         SELECT
           id,
           l_uid,
@@ -362,9 +365,11 @@ app.get("/api/rescue-team", async (req, res) => {
           h."L_Mode",
           h."L_TID",
           h."C_Date",
-          h."C_Time"
+          h."C_Time",
+          sd.today_manila
         FROM "hkvision"."tbhikvision" h
-        WHERE h."C_Date"::date = $1::date
+        CROSS JOIN server_date sd
+        WHERE h."C_Date"::date = sd.today_manila
           AND COALESCE(TRIM(h."Person"), '') <> ''
       ),
 
@@ -389,8 +394,9 @@ app.get("/api/rescue-team", async (req, res) => {
           h."PersonGroup" AS hikvision_group,
           h."L_Mode" AS last_mode,
           h."L_TID" AS last_tid,
-          h."C_Date" AS last_date,
-          h."C_Time" AS last_time,
+          h."C_Date"::text AS last_date,
+          h."C_Time"::text AS last_time,
+          h.today_manila::text AS server_today_manila,
 
           ROW_NUMBER() OVER (
             PARTITION BY rt.id
@@ -432,19 +438,15 @@ app.get("/api/rescue-team", async (req, res) => {
         last_date,
         last_time,
 
-        $1::text AS filter_date,
+        server_today_manila,
+        server_today_manila AS filter_date,
+        'RESCUE_TODAY_ONLY_HARD_LOCK_V3' AS route_version,
         TRUE AS inside
 
       FROM matched_today
       WHERE rn = 1
-
-        -- latest scan must be TODAY
-        AND last_date::date = $1::date
-
-        -- latest scan must be IN
+        AND last_date::date = server_today_manila::date
         AND TRIM(COALESCE(last_tid::text, '')) = '1'
-
-        -- latest scan location must be FLane 1, FLane 2, or Mustering
         AND (
           LOWER(TRIM(last_mode)) IN (
             'flane 1 entrance',
@@ -452,38 +454,32 @@ app.get("/api/rescue-team", async (req, res) => {
           )
           OR LOWER(TRIM(last_mode)) LIKE '%mustering%'
         )
-
-        -- search filter
         AND (
-          $2::text = ''
-          OR LOWER(name) LIKE LOWER('%' || $2::text || '%')
-          OR LOWER(role) LIKE LOWER('%' || $2::text || '%')
-          OR LOWER(dept) LIKE LOWER('%' || $2::text || '%')
+          $1::text = ''
+          OR LOWER(name) LIKE LOWER('%' || $1::text || '%')
+          OR LOWER(role) LIKE LOWER('%' || $1::text || '%')
+          OR LOWER(dept) LIKE LOWER('%' || $1::text || '%')
         )
-
       ORDER BY name ASC
       `,
-      [targetDate, search]
+      [search]
     );
 
     res.set("Cache-Control", "no-store");
 
-    console.log("✅ RESCUE ROUTE VERSION: LATEST_SCAN_TODAY_ONLY_THEN_TID1_FLANE_OR_MUSTERING");
-    console.log("✅ TARGET DATE:", targetDate);
-    console.log("✅ RESCUE INSIDE COUNT:", result.rows.length);
+    console.log("🔥 RESCUE ROUTE VERSION: RESCUE_TODAY_ONLY_HARD_LOCK_V3");
     console.log(
-      "✅ RESCUE ROWS:",
+      "🔥 RESCUE ROWS:",
       result.rows.map((r) => ({
-        rescue_id: r.id,
-        rescue_name: r.name,
-        rescue_l_uid: r.l_uid,
+        name: r.name,
         hikvision_name: r.hikvision_name,
-        hikvision_l_uid: r.hikvision_l_uid,
+        server_today_manila: r.server_today_manila,
         filter_date: r.filter_date,
         last_date: r.last_date,
         last_time: r.last_time,
         last_mode: r.last_mode,
         last_tid: r.last_tid,
+        route_version: r.route_version,
       }))
     );
 
