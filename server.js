@@ -330,48 +330,173 @@ async function getActiveSession() {
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
-    const todayManila = getTodayManila();
+    const search = String(req.query.search || "").trim();
+    const dept = String(req.query.dept || "ALL").trim();
 
     const result = await pool.query(
       `
-      WITH latest_today AS (
+      WITH server_date AS (
+        SELECT (NOW() AT TIME ZONE 'Asia/Manila')::date AS today_manila
+      ),
+
+      rescue AS (
         SELECT
-          h.*,
+          id,
+          l_uid,
+          name,
+          role,
+          dept,
+          phone,
+          email,
+          time_in,
+          time_out,
+          img,
+          is_active,
+          created_at,
+          updated_at
+        FROM app.rescue_team
+        WHERE is_active = TRUE
+      ),
+
+      latest_today AS (
+        SELECT
+          h."L_UID",
+          h."Person",
+          h."PersonGroup",
+          h."L_Mode",
+          h."L_TID",
+          h."C_Date",
+          h."C_Time",
+          sd.today_manila,
+
           ROW_NUMBER() OVER (
-            PARTITION BY h."L_UID"
+            PARTITION BY
+              COALESCE(
+                NULLIF(TRIM(h."L_UID"::text), ''),
+                LOWER(TRIM(h."Person"))
+              )
             ORDER BY h."C_Date" DESC, h."C_Time" DESC
-          ) AS rn
+          ) AS hikvision_rn
+
         FROM "hkvision"."tbhikvision" h
-        WHERE h."C_Date"::date = $1::date
+        CROSS JOIN server_date sd
+        WHERE h."C_Date"::date = sd.today_manila
+          AND COALESCE(TRIM(h."Person"), '') <> ''
+      ),
+
+      matched_rescue AS (
+        SELECT
+          rt.id,
+          rt.l_uid,
+          rt.name,
+          rt.role,
+          rt.dept,
+          rt.phone,
+          rt.email,
+          rt.time_in,
+          rt.time_out,
+          rt.img,
+          rt.is_active,
+          rt.created_at,
+          rt.updated_at,
+
+          h."L_UID" AS hikvision_l_uid,
+          h."Person" AS hikvision_name,
+          h."PersonGroup" AS hikvision_group,
+          h."L_Mode" AS last_mode,
+          h."L_TID" AS last_tid,
+          TO_CHAR(h."C_Date"::date, 'YYYY-MM-DD') AS last_date,
+          h."C_Time"::text AS last_time,
+          h.today_manila::text AS server_today_manila,
+
+          ROW_NUMBER() OVER (
+            PARTITION BY rt.id
+            ORDER BY h."C_Date" DESC, h."C_Time" DESC
+          ) AS rescue_rn
+
+        FROM rescue rt
+        INNER JOIN latest_today h
+          ON h.hikvision_rn = 1
+          AND (
+            (
+              NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NOT NULL
+              AND TRIM(h."L_UID"::text) = TRIM(rt.l_uid::text)
+            )
+            OR
+            (
+              NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NULL
+              AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
+            )
+          )
       )
 
       SELECT
-        "L_UID" AS id,
-        "L_UID" AS l_uid,
-        "Person" AS name,
-        "PersonGroup" AS dept,
-        "L_Mode" AS last_mode,
-        "L_TID" AS last_tid,
-        TO_CHAR("C_Date"::date, 'YYYY-MM-DD') AS last_date,
-        "C_Time"::text AS last_time,
+        id,
+        l_uid,
+        name,
+        role,
+        dept,
+        phone,
+        email,
+        time_in,
+        time_out,
+        img,
+        is_active,
+        created_at,
+        updated_at,
+
+        hikvision_l_uid,
+        hikvision_name,
+        hikvision_group,
+        last_mode,
+        last_tid,
+        last_date,
+        last_time,
+
+        server_today_manila,
+        server_today_manila AS filter_date,
+        'RESCUE_FROM_RESCUE_TEAM_ONLY_V1' AS route_version,
         TRUE AS inside
-      FROM latest_today
-      WHERE rn = 1
-        AND TRIM(COALESCE("L_TID"::text, '')) = '1'
+
+      FROM matched_rescue
+      WHERE rescue_rn = 1
+        AND TRIM(COALESCE(last_tid::text, '')) = '1'
         AND (
-          LOWER(TRIM("L_Mode")) IN (
+          LOWER(TRIM(last_mode)) IN (
             'flane 1 entrance',
             'flane 2 entrance'
           )
-          OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
+          OR LOWER(TRIM(last_mode)) LIKE '%mustering%'
         )
-      ORDER BY "Person" ASC;
+        AND (
+          $1::text = ''
+          OR LOWER(name) LIKE LOWER('%' || $1::text || '%')
+          OR LOWER(role) LIKE LOWER('%' || $1::text || '%')
+          OR LOWER(dept) LIKE LOWER('%' || $1::text || '%')
+        )
+        AND (
+          $2::text = 'ALL'
+          OR dept = $2::text
+        )
+      ORDER BY name ASC
       `,
-      [todayManila]
+      [search, dept]
     );
 
-    console.log("🔥 RESCUE TODAY MANILA:", todayManila);
-    console.log("🔥 RESCUE ROWS:", result.rows);
+    res.set("Cache-Control", "no-store");
+
+    console.log("🔥 RESCUE ROUTE VERSION: RESCUE_FROM_RESCUE_TEAM_ONLY_V1");
+    console.log("🔥 RESCUE ROW COUNT:", result.rows.length);
+    console.log(
+      "🔥 RESCUE ROWS:",
+      result.rows.map((r) => ({
+        name: r.name,
+        hikvisionName: r.hikvision_name,
+        lastDate: r.last_date,
+        lastTid: r.last_tid,
+        lastMode: r.last_mode,
+      }))
+    );
 
     res.json(result.rows);
   } catch (err) {
