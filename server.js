@@ -331,14 +331,18 @@ async function getActiveSession() {
 app.get("/api/rescue-team", async (req, res) => {
   try {
     const search = String(req.query.search || "").trim();
+    const targetDate = String(req.query.date || "").trim();
+    const dept = String(req.query.dept || "ALL").trim();
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(targetDate)) {
+      return res.status(400).json({
+        error: "Valid date is required. Format: YYYY-MM-DD",
+      });
+    }
 
     const result = await pool.query(
       `
-      WITH server_date AS (
-        SELECT (NOW() AT TIME ZONE 'Asia/Manila')::date AS today_manila
-      ),
-
-      rescue AS (
+      WITH rescue AS (
         SELECT
           id,
           l_uid,
@@ -366,10 +370,9 @@ app.get("/api/rescue-team", async (req, res) => {
           h."L_TID",
           h."C_Date",
           h."C_Time",
-          sd.today_manila
+          $1::date AS today_manila
         FROM "hkvision"."tbhikvision" h
-        CROSS JOIN server_date sd
-        WHERE h."C_Date"::date = sd.today_manila
+        WHERE h."C_Date"::date = $1::date
           AND COALESCE(TRIM(h."Person"), '') <> ''
       ),
 
@@ -442,7 +445,7 @@ app.get("/api/rescue-team", async (req, res) => {
         today_manila::text AS server_today_manila,
         today_manila::text AS filter_date,
 
-        'RESCUE_FROM_RESCUE_TEAM_TODAY_IN_ONLY_V4' AS route_version,
+        'RESCUE_COPY_PERSONNEL_DATE_V5' AS route_version,
         TRUE AS inside
 
       FROM matched_today_scans
@@ -457,19 +460,24 @@ app.get("/api/rescue-team", async (req, res) => {
           OR LOWER(TRIM(last_mode)) LIKE '%mustering%'
         )
         AND (
-          $1::text = ''
-          OR LOWER(name) LIKE LOWER('%' || $1::text || '%')
-          OR LOWER(role) LIKE LOWER('%' || $1::text || '%')
-          OR LOWER(dept) LIKE LOWER('%' || $1::text || '%')
+          $2::text = ''
+          OR LOWER(name) LIKE LOWER('%' || $2::text || '%')
+          OR LOWER(role) LIKE LOWER('%' || $2::text || '%')
+          OR LOWER(dept) LIKE LOWER('%' || $2::text || '%')
+        )
+        AND (
+          $3::text = 'ALL'
+          OR dept = $3::text
         )
       ORDER BY name ASC
       `,
-      [search]
+      [targetDate, search, dept]
     );
 
     res.set("Cache-Control", "no-store");
 
-    console.log("🔥 RESCUE ROUTE VERSION: RESCUE_FROM_RESCUE_TEAM_TODAY_IN_ONLY_V4");
+    console.log("🔥 RESCUE ROUTE VERSION: RESCUE_COPY_PERSONNEL_DATE_V5");
+    console.log("🔥 RESCUE TARGET DATE FROM FRONTEND:", targetDate);
     console.log("🔥 RESCUE ROW COUNT:", result.rows.length);
     console.log(
       "🔥 RESCUE ROWS:",

@@ -728,9 +728,13 @@ clearEmergency: async () => {
     }
   },
 
- fetchRescuePersonnel: async ({ search = "", dept = "ALL" } = {}) => {
+fetchRescuePersonnel: async ({ search = "", dept = "ALL" } = {}) => {
   try {
     const params = new URLSearchParams();
+
+    const todayManila = getTodayManilaClient();
+
+    params.append("date", todayManila);
 
     if (search) params.append("search", search);
     if (dept && dept !== "ALL") params.append("dept", dept);
@@ -751,8 +755,6 @@ clearEmergency: async () => {
     });
 
     const rows = await parseJsonResponse(res);
-
-    const todayManila = getTodayManilaClient();
 
     console.log("🔥 RESCUE RAW ROWS FROM BACKEND:", rows);
     console.log("🔥 FRONTEND TODAY MANILA:", todayManila);
