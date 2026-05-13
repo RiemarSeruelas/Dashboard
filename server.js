@@ -1678,11 +1678,15 @@ initDb()
   .then(() => {
     const PORT = Number(process.env.PORT) || 5000;
 
-    app.listen(PORT, () => {
-      console.log(`🚀 Backend running on http://localhost:${PORT}`);
-    });
-  })
-  .catch((err) => {
+app.listen(PORT, async () => {
+  console.log(`🚀 Backend running on http://localhost:${PORT}`);
+
+  try {
+    await initDb();
+    console.log("✅ DB INIT COMPLETE");
+  } catch (err) {
     console.error("❌ DB INIT ERROR:", err.message);
-    process.exit(1);
-  });
+    console.error("⚠️ Backend is still running, but DB routes may fail.");
+  }
+});
+  })
