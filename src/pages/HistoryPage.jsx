@@ -36,6 +36,23 @@ function normalizePerson(person, index = 0) {
   };
 }
 
+function formatManilaDateTime(value) {
+  if (!value) return "Unknown";
+
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return String(value);
+  }
+
+  return date.toLocaleString("en-PH", {
+    timeZone: "Asia/Manila",
+    dateStyle: "medium",
+    timeStyle: "medium",
+  });
+}
+
+
 export default function HistoryPage() {
   const history = useDashboardStore((s) => s.history) ?? [];
   const resetDashboard = useDashboardStore((s) => s.resetDashboard);
@@ -78,7 +95,7 @@ export default function HistoryPage() {
 
     worksheet.mergeCells("A2:D2");
     const dateCell = worksheet.getCell("A2");
-    dateCell.value = `Date: ${eventItem?.timestamp ?? "Unknown"}`;
+    dateCell.value = `Date: ${formatManilaDateTime(eventItem?.timestamp)}`;
     dateCell.font = { italic: true, size: 11 };
     dateCell.alignment = { horizontal: "center", vertical: "middle" };
 
@@ -198,7 +215,7 @@ export default function HistoryPage() {
 
     worksheet.views = [{ state: "frozen", ySplit: 6 }];
 
-    const safeTimestamp = String(eventItem?.timestamp ?? "unknown")
+    const safeTimestamp = formatManilaDateTime(eventItem?.timestamp)
       .replace(/[/:,\s]/g, "-")
       .replace(/-+/g, "-");
 
@@ -342,7 +359,7 @@ export default function HistoryPage() {
               <div className="metric-card">
                 <div className="metric-label">Timestamp</div>
                 <div className="metric-value" style={{ fontSize: 18 }}>
-                  {history[0]?.timestamp ?? "Unknown"}
+                         {formatManilaDateTime(history[0]?.timestamp)}
                 </div>
               </div>
 

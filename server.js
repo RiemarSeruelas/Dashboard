@@ -508,36 +508,38 @@ app.post("/api/rescue-team", async (req, res) => {
       return res.status(400).json({ error: "name and role are required" });
     }
 
-    const result = await pool.query(
-      `
-      INSERT INTO app.rescue_team (
-        l_uid,
-        name,
-        role,
-        dept,
-        phone,
-        email,
-        time_in,
-        time_out,
-        img,
-        is_active,
-        created_at,
-        updated_at
-      )
-      VALUES (
-        $1,
-        $2,
-        $3,
-        $4,
-        $5,
-        $6,
-        $7,
-        $8,
-        $9,
-        TRUE,
-        (NOW() AT TIME ZONE 'Asia/Manila'),
-        (NOW() AT TIME ZONE 'Asia/Manila')
-      )
+    const nowManila = getManilaNowSqlString();
+
+const result = await pool.query(
+  `
+  INSERT INTO app.rescue_team (
+    l_uid,
+    name,
+    role,
+    dept,
+    phone,
+    email,
+    time_in,
+    time_out,
+    img,
+    is_active,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    $1,
+    $2,
+    $3,
+    $4,
+    $5,
+    $6,
+    $7,
+    $8,
+    $9,
+    TRUE,
+    $10::timestamp,
+    $10::timestamp
+  )
       RETURNING
         id,
         l_uid,
@@ -563,6 +565,7 @@ app.post("/api/rescue-team", async (req, res) => {
         timeIn ? String(timeIn).trim() : null,
         timeOut ? String(timeOut).trim() : null,
         img || null,
+        nowManila,
       ]
     );
 
@@ -591,7 +594,8 @@ app.put("/api/rescue-team/:id", async (req, res) => {
       isActive,
       lUid,
     } = req.body;
-
+ 
+    const nowManila = getManilaNowSqlString();
     const result = await pool.query(
       `
       UPDATE app.rescue_team
@@ -606,7 +610,7 @@ app.put("/api/rescue-team/:id", async (req, res) => {
         time_out = $9,
         img = $10,
         is_active = COALESCE($11, is_active),
-        updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
+        updated_at = $12::timestamp
       WHERE id = $1
       RETURNING
         id,
@@ -635,6 +639,7 @@ app.put("/api/rescue-team/:id", async (req, res) => {
         timeOut ? String(timeOut).trim() : null,
         img || null,
         typeof isActive === "boolean" ? isActive : null,
+        nowManila,
       ]
     );
 
@@ -656,17 +661,19 @@ app.delete("/api/rescue-team/:id", async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      `
-      UPDATE app.rescue_team
-      SET
-        is_active = FALSE,
-        updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
-      WHERE id = $1
-      RETURNING id
-    `,
-      [id]
-    );
+    const nowManila = getManilaNowSqlString();
+
+const result = await pool.query(
+  `
+  UPDATE app.rescue_team
+  SET
+    is_active = FALSE,
+    updated_at = $2::timestamp
+  WHERE id = $1
+  RETURNING id
+  `,
+  [id, nowManila]
+);
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Rescue member not found" });

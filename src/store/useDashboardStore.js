@@ -739,7 +739,6 @@ fetchRescuePersonnel: async ({ search = "", dept = "ALL" } = {}) => {
     if (search) params.append("search", search);
     if (dept && dept !== "ALL") params.append("dept", dept);
 
-    // cache buster para sure hindi stale browser/Vite/proxy response
     params.append("_t", String(Date.now()));
 
     const url = `/api/rescue-team?${params.toString()}`;

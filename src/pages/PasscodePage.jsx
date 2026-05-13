@@ -10,33 +10,39 @@ export default function PasscodePage() {
   const [loading, setLoading] = useState(false);
 
   async function handleSubmit(e) {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
+  e.preventDefault();
+  setError("");
 
-    try {
-      const res = await fetch("/api/auth/passcode", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ passcode }),
-      });
-
-      const data = await res.json();
-
-      if (!res.ok) {
-        throw new Error(data?.error || "Invalid passcode");
-      }
-
-      sessionStorage.setItem("appAccess", data.token);
-      navigate("/personnel");
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-    }
+  if (!passcode.trim()) {
+    setError("Passcode is required");
+    return;
   }
+
+  setLoading(true);
+
+  try {
+    const res = await fetch("/api/auth/passcode", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ passcode: passcode.trim() }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      throw new Error(data?.error || "Invalid passcode");
+    }
+
+    sessionStorage.setItem("appAccess", data.token);
+    navigate("/personnel", { replace: true });
+  } catch (err) {
+    setError(err.message);
+  } finally {
+    setLoading(false);
+  }
+}
 
   return (
     <div className="passcode-page">
