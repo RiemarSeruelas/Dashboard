@@ -20,11 +20,32 @@ function getTodayManilaClient() {
 function normalizeDateOnly(value) {
   if (!value) return "";
 
-  // Handles values like:
-  // 2026-05-11
-  // 2026-05-11T00:00:00.000Z
-  // 2026-05-11 00:00:00
-  return String(value).slice(0, 10);
+  const raw = String(value);
+
+  // Plain DB date, safest case: 2026-05-13
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    return raw;
+  }
+
+  // ISO timestamp case: convert to Manila date
+  const date = new Date(raw);
+
+  if (!Number.isNaN(date.getTime())) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Manila",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(date);
+
+    const year = parts.find((p) => p.type === "year")?.value;
+    const month = parts.find((p) => p.type === "month")?.value;
+    const day = parts.find((p) => p.type === "day")?.value;
+
+    return `${year}-${month}-${day}`;
+  }
+
+  return raw.slice(0, 10);
 }
 
 function normalizePerson(row, index = 0, isEmergency = false) {
