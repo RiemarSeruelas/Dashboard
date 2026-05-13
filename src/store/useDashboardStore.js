@@ -22,12 +22,12 @@ function normalizeDateOnly(value) {
 
   const raw = String(value);
 
-  // Plain DB date, safest case: 2026-05-13
+  // Plain DB date: 2026-05-13
   if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
     return raw;
   }
 
-  // ISO timestamp case: convert to Manila date
+  // ISO timestamp: convert using Manila timezone
   const date = new Date(raw);
 
   if (!Number.isNaN(date.getTime())) {
@@ -758,38 +758,46 @@ clearEmergency: async () => {
     console.log("🔥 FRONTEND TODAY MANILA:", todayManila);
 
     const safeRows = Array.isArray(rows)
-      ? rows.filter((row) => {
-          const rowDate = normalizeDateOnly(row.last_date);
-          const rowTid = String(row.last_tid ?? "").trim();
-          const rowMode = String(row.last_mode ?? "").trim().toLowerCase();
+  ? rows.filter((row) => {
+      const rowDate = normalizeDateOnly(row.last_date);
+      const backendToday = normalizeDateOnly(
+        row.server_today_manila || row.filter_date
+      );
+      const compareToday = backendToday || todayManila;
 
-          const isToday = rowDate === todayManila;
-          const isIn = rowTid === "1";
-          const isAllowedLocation =
-            rowMode === "flane 1 entrance" ||
-            rowMode === "flane 2 entrance" ||
-            rowMode.includes("mustering");
+      const rowTid = String(row.last_tid ?? "").trim();
+      const rowMode = String(row.last_mode ?? "").trim().toLowerCase();
 
-          const keep = isToday && isIn && isAllowedLocation;
+      const isToday = rowDate === compareToday;
+      const isIn = rowTid === "1";
+      const isAllowedLocation =
+        rowMode === "flane 1 entrance" ||
+        rowMode === "flane 2 entrance" ||
+        rowMode.includes("mustering");
 
-          if (!keep) {
-            console.warn("🚫 FRONTEND BLOCKED BAD RESCUE ROW:", {
-              name: row.name,
-              hikvisionName: row.hikvision_name,
-              lastDate: row.last_date,
-              rowDate,
-              todayManila,
-              lastTid: row.last_tid,
-              lastMode: row.last_mode,
-              isToday,
-              isIn,
-              isAllowedLocation,
-            });
-          }
+      const keep = isToday && isIn && isAllowedLocation;
 
-          return keep;
-        })
-      : [];
+      if (!keep) {
+        console.warn("🚫 FRONTEND BLOCKED BAD RESCUE ROW:", {
+          name: row.name,
+          hikvisionName: row.hikvision_name,
+          lastDate: row.last_date,
+          rowDate,
+          backendToday,
+          frontendTodayManila: todayManila,
+          compareToday,
+          lastTid: row.last_tid,
+          lastMode: row.last_mode,
+          isToday,
+          isIn,
+          isAllowedLocation,
+          routeVersion: row.route_version,
+        });
+      }
+
+      return keep;
+    })
+  : [];
 
     const mapped = safeRows.map((row) => ({
       id: row.id,
