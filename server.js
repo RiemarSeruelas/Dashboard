@@ -330,162 +330,52 @@ async function getActiveSession() {
 // --------------------------------------------
 app.get("/api/rescue-team", async (req, res) => {
   try {
-    const search = String(req.query.search || "").trim();
+    const todayManila = getTodayManila();
 
     const result = await pool.query(
       `
-      WITH server_date AS (
-        SELECT (NOW() AT TIME ZONE 'Asia/Manila')::date AS today_manila
-      ),
-
-      rescue AS (
+      WITH latest_today AS (
         SELECT
-          id,
-          l_uid,
-          name,
-          role,
-          dept,
-          phone,
-          email,
-          time_in,
-          time_out,
-          img,
-          is_active,
-          created_at,
-          updated_at
-        FROM app.rescue_team
-        WHERE is_active = TRUE
-      ),
-
-      today_scans AS (
-        SELECT
-          h."L_UID",
-          h."Person",
-          h."PersonGroup",
-          h."L_Mode",
-          h."L_TID",
-          h."C_Date",
-          h."C_Time",
-          sd.today_manila
-        FROM "hkvision"."tbhikvision" h
-        CROSS JOIN server_date sd
-        WHERE h."C_Date"::date = sd.today_manila
-          AND COALESCE(TRIM(h."Person"), '') <> ''
-      ),
-
-      matched_today AS (
-        SELECT
-          rt.id,
-          rt.l_uid,
-          rt.name,
-          rt.role,
-          rt.dept,
-          rt.phone,
-          rt.email,
-          rt.time_in,
-          rt.time_out,
-          rt.img,
-          rt.is_active,
-          rt.created_at,
-          rt.updated_at,
-
-          h."L_UID" AS hikvision_l_uid,
-          h."Person" AS hikvision_name,
-          h."PersonGroup" AS hikvision_group,
-          h."L_Mode" AS last_mode,
-          h."L_TID" AS last_tid,
-          h."C_Date"::text AS last_date,
-          h."C_Time"::text AS last_time,
-          h.today_manila::text AS server_today_manila,
-
+          h.*,
           ROW_NUMBER() OVER (
-            PARTITION BY rt.id
+            PARTITION BY h."L_UID"
             ORDER BY h."C_Date" DESC, h."C_Time" DESC
           ) AS rn
-
-        FROM rescue rt
-        INNER JOIN today_scans h
-          ON (
-            NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NOT NULL
-            AND TRIM(h."L_UID"::text) = TRIM(rt.l_uid::text)
-          )
-          OR (
-            NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NULL
-            AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
-          )
+        FROM "hkvision"."tbhikvision" h
+        WHERE h."C_Date"::date = $1::date
       )
 
       SELECT
-        id,
-        l_uid,
-        name,
-        role,
-        dept,
-        phone,
-        email,
-        time_in,
-        time_out,
-        img,
-        is_active,
-        created_at,
-        updated_at,
-
-        hikvision_l_uid,
-        hikvision_name,
-        hikvision_group,
-        last_mode,
-        last_tid,
-        last_date,
-        last_time,
-
-        server_today_manila,
-        server_today_manila AS filter_date,
-        'RESCUE_TODAY_ONLY_HARD_LOCK_V3' AS route_version,
+        "L_UID" AS id,
+        "L_UID" AS l_uid,
+        "Person" AS name,
+        "PersonGroup" AS dept,
+        "L_Mode" AS last_mode,
+        "L_TID" AS last_tid,
+        TO_CHAR("C_Date"::date, 'YYYY-MM-DD') AS last_date,
+        "C_Time"::text AS last_time,
         TRUE AS inside
-
-      FROM matched_today
+      FROM latest_today
       WHERE rn = 1
-        AND last_date::date = server_today_manila::date
-        AND TRIM(COALESCE(last_tid::text, '')) = '1'
+        AND TRIM(COALESCE("L_TID"::text, '')) = '1'
         AND (
-          LOWER(TRIM(last_mode)) IN (
+          LOWER(TRIM("L_Mode")) IN (
             'flane 1 entrance',
             'flane 2 entrance'
           )
-          OR LOWER(TRIM(last_mode)) LIKE '%mustering%'
+          OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
         )
-        AND (
-          $1::text = ''
-          OR LOWER(name) LIKE LOWER('%' || $1::text || '%')
-          OR LOWER(role) LIKE LOWER('%' || $1::text || '%')
-          OR LOWER(dept) LIKE LOWER('%' || $1::text || '%')
-        )
-      ORDER BY name ASC
+      ORDER BY "Person" ASC;
       `,
-      [search]
+      [todayManila]
     );
 
-    res.set("Cache-Control", "no-store");
-
-    console.log("🔥 RESCUE ROUTE VERSION: RESCUE_TODAY_ONLY_HARD_LOCK_V3");
-    console.log(
-      "🔥 RESCUE ROWS:",
-      result.rows.map((r) => ({
-        name: r.name,
-        hikvision_name: r.hikvision_name,
-        server_today_manila: r.server_today_manila,
-        filter_date: r.filter_date,
-        last_date: r.last_date,
-        last_time: r.last_time,
-        last_mode: r.last_mode,
-        last_tid: r.last_tid,
-        route_version: r.route_version,
-      }))
-    );
+    console.log("🔥 RESCUE TODAY MANILA:", todayManila);
+    console.log("🔥 RESCUE ROWS:", result.rows);
 
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ RESCUE TEAM GET ERROR:", err.message);
+    console.error("❌ RESCUE TEAM GET ERROR:", err);
     res.status(500).json({ error: err.message });
   }
 });
