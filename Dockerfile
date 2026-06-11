@@ -10,6 +10,6 @@ COPY . .
 
 RUN npm run build
 
-EXPOSE 5000
+EXPOSE 5053
 
 CMD ["node", "server.js"]
