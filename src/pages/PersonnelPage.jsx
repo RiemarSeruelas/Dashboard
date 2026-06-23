@@ -571,15 +571,18 @@ export default function PersonnelPage() {
           className="watchlist-panel"
           ref={watchlistScrollRef}
           style={{
-            maxHeight: "calc(100vh - 260px)",
-            overflowY: "auto",
-            paddingRight: 4,
+            overscrollBehavior: "contain",
+            userSelect: "none",
           }}
         >
           {watchlistPeople.length > 0 ? (
             <>
               {watchlistPeople.map((p) => (
-              <div className="watchlist-row" key={`${p.personKey}-${p.id}`}>
+              <div
+                className="watchlist-row"
+                key={`${p.personKey}-${p.id}`}
+                draggable={false}
+              >
                 <span
                   className={`watchlist-dot ${emergencyActive ? "danger" : "normal"}`}
                 />
