@@ -129,8 +129,50 @@ export default function PersonnelPage() {
   const [riskHasMore, setRiskHasMore] = useState(false);
   const [riskLoading, setRiskLoading] = useState(false);
   const [riskLoadingMore, setRiskLoadingMore] = useState(false);
+  const [musteringSyncing, setMusteringSyncing] = useState(false);
 
-  useEffect(() => {
+
+  const rememberScrollPositions = useCallback(() => {
+    const mainEl = scrollRef.current;
+    const riskEl = riskScrollRef.current;
+
+    return {
+      windowX: window.scrollX || 0,
+      windowY: window.scrollY || 0,
+      mainTop: mainEl?.scrollTop ?? 0,
+      riskTop: riskEl?.scrollTop ?? 0,
+    };
+  }, []);
+
+  const restoreScrollPositions = useCallback((positions) => {
+    if (!positions) return;
+
+    window.requestAnimationFrame(() => {
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = positions.mainTop;
+      }
+
+      if (riskScrollRef.current) {
+        riskScrollRef.current.scrollTop = positions.riskTop;
+      }
+
+      window.scrollTo(positions.windowX, positions.windowY);
+
+      window.requestAnimationFrame(() => {
+        if (scrollRef.current) {
+          scrollRef.current.scrollTop = positions.mainTop;
+        }
+
+        if (riskScrollRef.current) {
+          riskScrollRef.current.scrollTop = positions.riskTop;
+        }
+
+        window.scrollTo(positions.windowX, positions.windowY);
+      });
+    });
+  }, []);
+
+ useEffect(() => {
   if (!didSearchEffectInitRef.current) {
     didSearchEffectInitRef.current = true;
     return;
@@ -225,6 +267,45 @@ export default function PersonnelPage() {
     },
     [emergencyActive, riskLoading, riskLoadingMore, riskOffset]
   );
+
+
+  const syncMusteringWithoutJump = useCallback(async () => {
+    if (!emergencyActive || musteringSyncing) return;
+
+    const positions = rememberScrollPositions();
+    setMusteringSyncing(true);
+
+    try {
+      const response = await fetch("/api/emergency/sync-mustering", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Sync mustering failed: ${response.status}`);
+      }
+
+      await response.json().catch(() => null);
+      await loadEmergencyStatus?.({ forceRefreshPersonnel: true });
+      await loadPotentialRisks({ reset: true });
+    } catch (error) {
+      console.error("❌ SYNC MUSTERING ERROR:", error);
+      await loadEmergencyStatus?.({ forceRefreshPersonnel: true });
+      await loadPotentialRisks({ reset: true });
+    } finally {
+      setMusteringSyncing(false);
+      restoreScrollPositions(positions);
+    }
+  }, [
+    emergencyActive,
+    musteringSyncing,
+    rememberScrollPositions,
+    restoreScrollPositions,
+    loadEmergencyStatus,
+    loadPotentialRisks,
+  ]);
 
   useEffect(() => {
     if (didInitRef.current) return;
@@ -432,12 +513,10 @@ export default function PersonnelPage() {
   {emergencyActive && (
     <button
       className="primary-action-btn"
-      disabled={personnelLoading}
-      onClick={() => {
-        loadEmergencyStatus?.({ forceRefreshPersonnel: true });
-      }}
+      disabled={personnelLoading || musteringSyncing}
+      onClick={syncMusteringWithoutJump}
     >
-      {personnelLoading ? "Syncing..." : "Sync Mustering"}
+      {personnelLoading || musteringSyncing ? "Syncing..." : "Sync Mustering"}
     </button>
   )}
 </aside>
@@ -583,17 +662,6 @@ export default function PersonnelPage() {
 
               {emergencyActive && riskLoadingMore && (
                 <div className="watchlist-empty">Loading more risks...</div>
-              )}
-
-              {emergencyActive && riskHasMore && !riskLoadingMore && (
-                <button
-                  className="primary-action-btn"
-                  type="button"
-                  onClick={() => loadPotentialRisks({ reset: false })}
-                  style={{ width: "100%", marginTop: 10 }}
-                >
-                  Load more risks
-                </button>
               )}
             </>
           ) : (
