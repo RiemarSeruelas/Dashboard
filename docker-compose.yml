@@ -1,0 +1,9 @@
+services:
+  emergency-dashboard:
+    build: .
+    container_name: emergency-dashboard
+    ports:
+      - "5053:5053"
+    env_file:
+      - .env
+    restart: unless-stopped
