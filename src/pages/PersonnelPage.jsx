@@ -1,4 +1,4 @@
-import { useMemo, useEffect, useRef, useState } from "react";
+import { useMemo, useEffect, useRef, useState, useCallback } from "react";
 import AppShell from "../components/Appshell";
 import { useDashboardStore } from "../store/useDashboardStore";
 
@@ -105,6 +105,7 @@ export default function PersonnelPage() {
   const prevEmergencyRef = useRef(emergencyActive);
   const scrollRef = useRef(null);
   const watchlistScrollRef = useRef(null);
+  const notSafeWatchlistOffsetRef = useRef(0);
 
   const [searchInput, setSearchInputLocal] = useState(searchTerm || "");
   const [notSafeWatchlistRows, setNotSafeWatchlistRows] = useState([]);
@@ -124,60 +125,72 @@ export default function PersonnelPage() {
     isRescue: false,
   });
 
-  async function fetchNotSafeWatchlist({ reset = false } = {}) {
-    if (!emergencyActive) return;
-    if (reset ? notSafeWatchlistLoading : notSafeWatchlistLoadingMore) return;
+  const fetchNotSafeWatchlist = useCallback(
+    async ({ reset = false } = {}) => {
+      if (!emergencyActive) return;
+      if (reset ? notSafeWatchlistLoading : notSafeWatchlistLoadingMore) return;
 
-    const nextOffset = reset ? 0 : notSafeWatchlistOffset;
-    const trimmedSearch = (searchTerm || "").trim();
-    const activeDept = selectedDepartment || "ALL";
+      const nextOffset = reset ? 0 : notSafeWatchlistOffsetRef.current;
+      const trimmedSearch = (searchTerm || "").trim();
+      const activeDept = selectedDepartment || "ALL";
 
-    if (trimmedSearch.length > 0 && trimmedSearch.length < 3) {
-      return;
-    }
-
-    if (reset) {
-      setNotSafeWatchlistLoading(true);
-    } else {
-      setNotSafeWatchlistLoadingMore(true);
-    }
-
-    try {
-      const params = new URLSearchParams({
-        status: "NOT_SAFE",
-        limit: "20",
-        offset: String(nextOffset),
-      });
-
-      if (trimmedSearch) {
-        params.set("search", trimmedSearch);
+      if (trimmedSearch.length > 0 && trimmedSearch.length < 3) {
+        return;
       }
 
-      if (activeDept && activeDept !== "ALL") {
-        params.set("dept", activeDept);
+      if (reset) {
+        setNotSafeWatchlistLoading(true);
+      } else {
+        setNotSafeWatchlistLoadingMore(true);
       }
 
-      const res = await fetch(`/api/emergency-accountability?${params.toString()}`);
+      try {
+        const params = new URLSearchParams({
+          status: "NOT_SAFE",
+          limit: "20",
+          offset: String(nextOffset),
+        });
 
-      if (!res.ok) {
-        throw new Error(`Failed to load not safe personnel: ${res.status}`);
+        if (trimmedSearch) {
+          params.set("search", trimmedSearch);
+        }
+
+        if (activeDept && activeDept !== "ALL") {
+          params.set("dept", activeDept);
+        }
+
+        const res = await fetch(`/api/emergency-accountability?${params.toString()}`);
+
+        if (!res.ok) {
+          throw new Error(`Failed to load not safe personnel: ${res.status}`);
+        }
+
+        const data = await res.json();
+        const rawRows = Array.isArray(data.rows) ? data.rows : [];
+        const mappedRows = dedupePeopleByName(rawRows.map(normalizeEmergencyRow));
+        const newOffset = nextOffset + rawRows.length;
+
+        notSafeWatchlistOffsetRef.current = newOffset;
+        setNotSafeWatchlistOffset(newOffset);
+        setNotSafeWatchlistRows((prev) =>
+          reset ? mappedRows : dedupePeopleByName([...prev, ...mappedRows])
+        );
+        setNotSafeWatchlistHasMore(Boolean(data.hasMore));
+      } catch (err) {
+        console.error("❌ NOT SAFE WATCHLIST ERROR:", err);
+      } finally {
+        setNotSafeWatchlistLoading(false);
+        setNotSafeWatchlistLoadingMore(false);
       }
-
-      const data = await res.json();
-      const mappedRows = dedupePeopleByName((data.rows || []).map(normalizeEmergencyRow));
-
-      setNotSafeWatchlistRows((prev) =>
-        reset ? mappedRows : dedupePeopleByName([...prev, ...mappedRows])
-      );
-      setNotSafeWatchlistOffset(nextOffset + (data.rows?.length || 0));
-      setNotSafeWatchlistHasMore(Boolean(data.hasMore));
-    } catch (err) {
-      console.error("❌ NOT SAFE WATCHLIST ERROR:", err);
-    } finally {
-      setNotSafeWatchlistLoading(false);
-      setNotSafeWatchlistLoadingMore(false);
-    }
-  }
+    },
+    [
+      emergencyActive,
+      notSafeWatchlistLoading,
+      notSafeWatchlistLoadingMore,
+      searchTerm,
+      selectedDepartment,
+    ]
+  );
 
   useEffect(() => {
   if (!didSearchEffectInitRef.current) {
@@ -216,6 +229,7 @@ export default function PersonnelPage() {
 
   useEffect(() => {
     if (!emergencyActive) {
+      notSafeWatchlistOffsetRef.current = 0;
       setNotSafeWatchlistRows([]);
       setNotSafeWatchlistOffset(0);
       setNotSafeWatchlistHasMore(false);
@@ -232,9 +246,9 @@ export default function PersonnelPage() {
       watchlistScrollRef.current.scrollTop = 0;
     }
 
+    notSafeWatchlistOffsetRef.current = 0;
     fetchNotSafeWatchlist({ reset: true });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [emergencyActive, searchTerm, selectedDepartment]);
+  }, [emergencyActive, searchTerm, selectedDepartment, fetchNotSafeWatchlist]);
 
   useEffect(() => {
     if (didInitRef.current) return;
@@ -289,12 +303,38 @@ export default function PersonnelPage() {
 
     el.addEventListener("scroll", handleScroll);
     return () => el.removeEventListener("scroll", handleScroll);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     emergencyActive,
     notSafeWatchlistHasMore,
     notSafeWatchlistLoadingMore,
-    notSafeWatchlistOffset,
+    fetchNotSafeWatchlist,
+  ]);
+
+  useEffect(() => {
+    const el = watchlistScrollRef.current;
+
+    if (
+      !el ||
+      !emergencyActive ||
+      !notSafeWatchlistHasMore ||
+      notSafeWatchlistLoading ||
+      notSafeWatchlistLoadingMore
+    ) {
+      return;
+    }
+
+    const hasScrollbar = el.scrollHeight > el.clientHeight + 8;
+
+    if (!hasScrollbar) {
+      fetchNotSafeWatchlist({ reset: false });
+    }
+  }, [
+    emergencyActive,
+    notSafeWatchlistRows.length,
+    notSafeWatchlistHasMore,
+    notSafeWatchlistLoading,
+    notSafeWatchlistLoadingMore,
+    fetchNotSafeWatchlist,
   ]);
 
   const civilians = useMemo(() => {
@@ -456,8 +496,10 @@ export default function PersonnelPage() {
                         setNotSafeWatchlistRows((prev) =>
                           prev.filter(
                             (row) =>
-                              row.personKey !== person.personKey &&
-                              row.id !== person.id
+                              !(
+                                row.personKey === person.personKey ||
+                                row.id === person.id
+                              )
                           )
                         );
                       }
@@ -525,7 +567,15 @@ export default function PersonnelPage() {
           {emergencyActive ? "Potential Risks" : "Inside Plant"}
         </div>
 
-        <div className="watchlist-panel" ref={watchlistScrollRef}>
+        <div
+          className="watchlist-panel"
+          ref={watchlistScrollRef}
+          style={{
+            maxHeight: "calc(100vh - 260px)",
+            overflowY: "auto",
+            paddingRight: 4,
+          }}
+        >
           {watchlistPeople.length > 0 ? (
             <>
               {watchlistPeople.map((p) => (
@@ -538,8 +588,21 @@ export default function PersonnelPage() {
               ))}
 
               {emergencyActive && notSafeWatchlistLoadingMore && (
-                <div className="watchlist-empty">Loading more...</div>
+                <div className="watchlist-empty">Loading more risks...</div>
               )}
+
+              {emergencyActive &&
+                notSafeWatchlistHasMore &&
+                !notSafeWatchlistLoadingMore && (
+                  <button
+                    className="primary-action-btn"
+                    type="button"
+                    onClick={() => fetchNotSafeWatchlist({ reset: false })}
+                    style={{ width: "100%", marginTop: 10 }}
+                  >
+                    Load more risks
+                  </button>
+                )}
             </>
           ) : (
             <div className="watchlist-empty">
