@@ -1085,6 +1085,7 @@ app.get("/api/emergency-accountability", async (req, res) => {
     const { limit, offset } = parsePaging(req);
     const search = (req.query.search || "").trim();
     const dept = (req.query.dept || "").trim();
+    const status = String(req.query.status || "").trim().toUpperCase();
 
     const result = await pool.query(
       `
@@ -1127,6 +1128,14 @@ app.get("/api/emergency-accountability", async (req, res) => {
 
     if (dept && dept !== "ALL") {
       rows = rows.filter((row) => String(row?.persongroup || "") === dept);
+    }
+
+    if (status === "SAFE") {
+      rows = rows.filter((row) => row.current_status === "SAFE");
+    }
+
+    if (status === "NOT_SAFE" || status === "NOT SAFE") {
+      rows = rows.filter((row) => row.current_status !== "SAFE");
     }
 
     rows.sort((a, b) =>
