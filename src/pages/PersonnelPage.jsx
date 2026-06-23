@@ -344,29 +344,71 @@ export default function PersonnelPage() {
 
   useEffect(() => {
     const el = riskScrollRef.current;
-    if (!el || !emergencyActive) return;
+    if (!el) return;
 
-    const handleRiskScroll = () => {
+    const handleWatchlistScroll = () => {
       const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
 
-      if (nearBottom && riskHasMore && !riskLoading && !riskLoadingMore) {
-        loadPotentialRisks({ reset: false });
+      if (!nearBottom) return;
+
+      if (emergencyActive) {
+        if (riskHasMore && !riskLoading && !riskLoadingMore) {
+          loadPotentialRisks({ reset: false });
+        }
+
+        return;
+      }
+
+      if (personnelHasMore && !personnelLoadingMore && !personnelLoading) {
+        loadMorePersonnel?.();
       }
     };
 
-    el.addEventListener("scroll", handleRiskScroll, { passive: true });
-    return () => el.removeEventListener("scroll", handleRiskScroll);
-  }, [emergencyActive, riskHasMore, riskLoading, riskLoadingMore, loadPotentialRisks]);
+    el.addEventListener("scroll", handleWatchlistScroll, { passive: true });
+    return () => el.removeEventListener("scroll", handleWatchlistScroll);
+  }, [
+    emergencyActive,
+    riskHasMore,
+    riskLoading,
+    riskLoadingMore,
+    loadPotentialRisks,
+    personnelHasMore,
+    personnelLoadingMore,
+    personnelLoading,
+    loadMorePersonnel,
+  ]);
 
   useEffect(() => {
     const el = riskScrollRef.current;
-    if (!el || !emergencyActive) return;
+    if (!el) return;
 
     const canScroll = el.scrollHeight > el.clientHeight + 10;
-    if (!canScroll && riskHasMore && !riskLoading && !riskLoadingMore) {
-      loadPotentialRisks({ reset: false });
+    if (canScroll) return;
+
+    if (emergencyActive) {
+      if (riskHasMore && !riskLoading && !riskLoadingMore) {
+        loadPotentialRisks({ reset: false });
+      }
+
+      return;
     }
-  }, [emergencyActive, riskPeople.length, riskHasMore, riskLoading, riskLoadingMore, loadPotentialRisks]);
+
+    if (personnelHasMore && !personnelLoadingMore && !personnelLoading) {
+      loadMorePersonnel?.();
+    }
+  }, [
+    emergencyActive,
+    riskPeople.length,
+    riskHasMore,
+    riskLoading,
+    riskLoadingMore,
+    loadPotentialRisks,
+    personnel.length,
+    personnelHasMore,
+    personnelLoadingMore,
+    personnelLoading,
+    loadMorePersonnel,
+  ]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -662,6 +704,10 @@ export default function PersonnelPage() {
 
               {emergencyActive && riskLoadingMore && (
                 <div className="watchlist-empty">Loading more risks...</div>
+              )}
+
+              {!emergencyActive && personnelLoadingMore && (
+                <div className="watchlist-empty">Loading more personnel...</div>
               )}
             </>
           ) : (
