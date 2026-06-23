@@ -455,11 +455,18 @@ export default function PersonnelPage() {
                   <div
                     className="personnel-card-simple"
                     key={`${person.personKey}-${person.id}`}
-                    onClick={() => {
-                        if (!emergencyActive) return;
-                        togglePersonStatus?.(person.id);
+                    onClick={async () => {
+                      if (!emergencyActive || emergencyActionLoading) return;
 
-                        if (person.status !== "SAFE") {
+                      const wasSafe = person.status === "SAFE";
+
+                      try {
+                        await togglePersonStatus?.(person.id);
+
+                        // If they were NOT SAFE, remove immediately from Potential Risks.
+                        // If they were SAFE and are being marked NOT SAFE again, reload
+                        // from the backend so they reappear in Potential Risks.
+                        if (!wasSafe) {
                           setRiskPeople((prev) =>
                             prev.filter(
                               (risk) =>
@@ -468,7 +475,15 @@ export default function PersonnelPage() {
                             )
                           );
                         }
-                        }}
+
+                        window.setTimeout(() => {
+                          loadPotentialRisks({ reset: true });
+                        }, 250);
+                      } catch (error) {
+                        console.error("❌ STATUS TOGGLE ERROR:", error);
+                        loadPotentialRisks({ reset: true });
+                      }
+                    }}
                     style={{
                       cursor: emergencyActive ? "pointer" : "default",
                       opacity: person.status === "SAFE" ? 0.9 : 1,
