@@ -1453,7 +1453,7 @@ async function syncMusteringScansToActiveSession() {
     FROM latest_today
     WHERE rn = 1
       AND TRIM(COALESCE("L_TID"::text, '')) = '1'
-      AND LOWER(TRIM("L_Mode")) LIKE '%mustering%'
+      AND LOWER(TRIM("L_Mode")) LIKE '% %'
     ORDER BY "C_Time" DESC
     `,
     [todayManila]
