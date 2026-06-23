@@ -562,17 +562,32 @@ export default function PersonnelPage() {
         </div>
       </section>
 
-      <aside className="panel right-panel">
-        <div className="panel-title">
+      <aside
+        className="panel right-panel"
+        style={{
+          display: "flex",
+          flexDirection: "column",
+          minHeight: 0,
+          maxHeight: "calc(100vh - 160px)",
+          overflow: "hidden",
+        }}
+      >
+        <div className="panel-title" style={{ flexShrink: 0 }}>
           {emergencyActive ? "Potential Risks" : "Inside Plant"}
         </div>
 
         <div
           className="watchlist-panel"
           ref={watchlistScrollRef}
+          onWheel={(e) => e.stopPropagation()}
+          onTouchMove={(e) => e.stopPropagation()}
           style={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: "auto",
             overscrollBehavior: "contain",
             userSelect: "none",
+            paddingRight: 4,
           }}
         >
           {watchlistPeople.length > 0 ? (
