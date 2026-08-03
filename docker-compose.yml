@@ -1,3 +1,5 @@
+name: Emergency-Dashboard
+
 services:
   app:
     build:
