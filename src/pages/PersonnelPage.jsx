@@ -131,6 +131,7 @@ export default function PersonnelPage() {
   const prevEmergencyRef = useRef(emergencyActive);
   const scrollRef = useRef(null);
   const riskScrollRef = useRef(null);
+  const synchronizedPageLoadingRef = useRef(false);
   const riskRequestIdRef = useRef(0);
   const riskPagingRef = useRef({
     offset: 0,
@@ -317,6 +318,46 @@ export default function PersonnelPage() {
     [emergencyActive, searchTerm, selectedDepartment],
   );
 
+  const loadNextSynchronizedPage = useCallback(async () => {
+    if (synchronizedPageLoadingRef.current) return;
+    if (personnelLoading || personnelLoadingMore) return;
+    if (
+      emergencyActive &&
+      (riskLoading || riskLoadingMore || riskPagingRef.current.loading)
+    ) {
+      return;
+    }
+
+    const shouldLoadPersonnel = personnelHasMore;
+    const shouldLoadRisks =
+      emergencyActive && riskHasMore && riskPagingRef.current.hasMore;
+
+    if (!shouldLoadPersonnel && !shouldLoadRisks) return;
+
+    synchronizedPageLoadingRef.current = true;
+
+    try {
+      await Promise.all([
+        shouldLoadPersonnel ? loadMorePersonnel?.() : Promise.resolve(),
+        shouldLoadRisks
+          ? loadPotentialRisks({ reset: false })
+          : Promise.resolve(),
+      ]);
+    } finally {
+      synchronizedPageLoadingRef.current = false;
+    }
+  }, [
+    emergencyActive,
+    personnelHasMore,
+    personnelLoading,
+    personnelLoadingMore,
+    riskHasMore,
+    riskLoading,
+    riskLoadingMore,
+    loadMorePersonnel,
+    loadPotentialRisks,
+  ]);
+
   const syncMusteringWithoutJump = useCallback(async () => {
     if (!emergencyActive || musteringSyncing) return;
 
@@ -415,63 +456,39 @@ export default function PersonnelPage() {
 
       if (!nearBottom) return;
 
-      if (emergencyActive) {
-        if (riskHasMore && !riskLoading && !riskLoadingMore) {
-          loadPotentialRisks({ reset: false });
-        }
-
-        return;
-      }
-
-      if (personnelHasMore && !personnelLoadingMore && !personnelLoading) {
-        loadMorePersonnel?.();
-      }
+      loadNextSynchronizedPage();
     };
 
     el.addEventListener("scroll", handleWatchlistScroll, { passive: true });
     return () => el.removeEventListener("scroll", handleWatchlistScroll);
-  }, [
-    emergencyActive,
-    riskHasMore,
-    riskLoading,
-    riskLoadingMore,
-    loadPotentialRisks,
-    personnelHasMore,
-    personnelLoadingMore,
-    personnelLoading,
-    loadMorePersonnel,
-  ]);
+  }, [loadNextSynchronizedPage]);
 
   useEffect(() => {
-    const el = riskScrollRef.current;
-    if (!el) return;
+    const leftEl = riskScrollRef.current;
+    const rightEl = scrollRef.current;
+    if (!leftEl || !rightEl) return undefined;
 
-    const canScroll = el.scrollHeight > el.clientHeight + 10;
-    if (canScroll) return;
+    const frameId = window.requestAnimationFrame(() => {
+      const rightNeedsAnotherPage =
+        personnelHasMore && rightEl.scrollHeight <= rightEl.clientHeight + 10;
+      const leftNeedsAnotherPage =
+        emergencyActive &&
+        riskHasMore &&
+        leftEl.scrollHeight <= leftEl.clientHeight + 10;
 
-    if (emergencyActive) {
-      if (riskHasMore && !riskLoading && !riskLoadingMore) {
-        loadPotentialRisks({ reset: false });
+      if (rightNeedsAnotherPage || leftNeedsAnotherPage) {
+        loadNextSynchronizedPage();
       }
+    });
 
-      return;
-    }
-
-    if (personnelHasMore && !personnelLoadingMore && !personnelLoading) {
-      loadMorePersonnel?.();
-    }
+    return () => window.cancelAnimationFrame(frameId);
   }, [
     emergencyActive,
     riskPeople.length,
     riskHasMore,
-    riskLoading,
-    riskLoadingMore,
-    loadPotentialRisks,
     personnel.length,
     personnelHasMore,
-    personnelLoadingMore,
-    personnelLoading,
-    loadMorePersonnel,
+    loadNextSynchronizedPage,
   ]);
 
   useEffect(() => {
@@ -481,14 +498,14 @@ export default function PersonnelPage() {
     const handleScroll = () => {
       const nearBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 80;
 
-      if (nearBottom && personnelHasMore && !personnelLoadingMore) {
-        loadMorePersonnel?.();
+      if (nearBottom) {
+        loadNextSynchronizedPage();
       }
     };
 
     el.addEventListener("scroll", handleScroll);
     return () => el.removeEventListener("scroll", handleScroll);
-  }, [loadMorePersonnel, personnelHasMore, personnelLoadingMore]);
+  }, [loadNextSynchronizedPage]);
 
   const civilians = useMemo(() => {
     const source = Array.isArray(personnel)
