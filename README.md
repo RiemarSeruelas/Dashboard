@@ -1,225 +1,118 @@
-# Docker usage
+# Emergency Accountability Dashboard
 
-Build the image:
+## Requirements
 
-```bash
-docker build -t emergency-dashboard .
+- Docker Desktop
+- Access to the PostgreSQL database used by the application
+
+The PostgreSQL database and required tables in the `app` schema must already exist before starting the dashboard.
+
+## 1. Configure the Environment File
+
+Create a file named `.env` in the main project folder:
+
+```env
+PORT=5053
+APP_PORT=5053
+
+DB_HOST=your_database_server
+DB_PORT=5432
+DB_NAME=your_database
+DB_USER=your_database_user
+DB_PASSWORD=your_database_password
 ```
 
-Run the container:
+Replace the example database values with the correct credentials. Do not add spaces around the `=` signs.
 
-```bash
-docker run --env-file .env -p 5053:5053 --name emergency-dashboard emergency-dashboard
+## 2. Start the Application
+
+Open PowerShell or Command Prompt in the project folder, then run:
+
+```powershell
+docker compose up -d --build
 ```
 
-Open in browser:
+Wait for Docker to finish building and starting the application.
 
-```text
-http://SERVER_IP:5053
-```
+## 3. Open the Dashboard
 
-For local testing:
+On the computer running Docker:
 
 ```text
 http://localhost:5053
 ```
 
-To replace an existing container:
+From another computer on the same network:
 
-```bash
-docker rm -f emergency-dashboard
-docker run --env-file .env -p 5053:5053 --name emergency-dashboard emergency-dashboard
+```text
+http://SERVER_IP:5053
 ```
 
-View logs:
+Replace `SERVER_IP` with the IP address of the computer running Docker.
 
-```bash
-docker logs -f emergency-dashboard
+## Check Application Status
+
+```powershell
+docker compose ps
 ```
 
-Stop the container:
+## View Application Logs
 
-```bash
-docker stop emergency-dashboard
+```powershell
+docker compose logs -f
 ```
 
-Using Docker Compose:
+Press `Ctrl + C` to stop viewing the logs. This does not stop the application.
 
-```bash
-docker compose up -d --build
+## Restart After Making Changes
+
+Use these commands after changing `.env` or replacing application files:
+
+```powershell
+docker compose down
+docker compose up -d --build --force-recreate
 ```
 
-Stop Docker Compose:
+## Stop the Application
 
-```bash
+```powershell
 docker compose down
 ```
 
+## Troubleshooting
 
-# Emergency Accountability Dashboard
+### Port 5053 Is Already in Use
 
-## Requirements
+Check the currently running containers:
 
-Install the following first:
-
-- Node.js (includes npm)
-- PostgreSQL access (database credentials required)
-- Git (optional)
-
----
-
-# Setup
-
-## 1 Install Dependencies
-
-Open terminal in the project folder:
-
-```bash
-npm install
+```powershell
+docker ps
 ```
 
----
+Stop the old Emergency Dashboard container before starting this application again.
 
-## 2 Configure Environment File
+### Database Connection Error
 
-Copy:
+Verify these values in `.env`:
 
-```bash
-.env.example
+- `DB_HOST`
+- `DB_PORT`
+- `DB_NAME`
+- `DB_USER`
+- `DB_PASSWORD`
+
+Also confirm that PostgreSQL allows connections from the computer running Docker.
+
+### Check Backend Health
+
+Open this address in a browser:
+
+```text
+http://localhost:5053/api/health
 ```
 
-Create:
+If the health page does not load, view the application logs:
 
-```bash
-.env
+```powershell
+docker compose logs --tail=100
 ```
-
-Update database settings:
-
-```env
-PORT=5000
-DB_HOST=your_server
-DB_PORT=5432
-DB_NAME=your_database
-DB_USER=your_user
-DB_PASSWORD=your_password
-```
-
----
-
-## 3 Build Application
-
-```bash
-npm run build
-```
-
----
-
-## 4 Start Application
-
-```bash
-npm start
-```
-
-Application runs at:
-
-```txt
-http://localhost:5000
-```
-
----
-
-# How to Use
-
-## Login
-Open the application and enter the passcode.
-
----
-
-## Personnel Page
-Use to:
-- View current personnel
-- Search employees
-- Filter by department
-- Monitor personnel count
-
----
-
-## Start Emergency
-Press **Start** to begin emergency accountability.
-
-System captures current personnel snapshot.
-
----
-
-## Rescue / Accountability
-Use to:
-- Mark personnel Safe
-- View remaining Not Safe personnel
-- Track accountability progress
-
----
-
-## Analytics
-View:
-- Total tracked
-- Safe count
-- Not Safe count
-- Emergency summary
-
----
-
-## History
-Use to:
-- View past emergency sessions
-- Open session details
-- Export records to Excel
-
----
-
-## Stop Emergency
-Press **Stop** to close and save the session.
-
----
-
-## Logout
-Press Logout to return to passcode page.
-
----
-
-# Typical Startup
-
-```bash
-npm start
-```
-
-If frontend changes were made:
-
-```bash
-npm run build
-npm start
-```
-
----
-
-# Troubleshooting
-
-## Cannot find package express
-
-Run:
-
-```bash
-npm install
-```
-
-## Cannot GET /passcode
-
-Run:
-
-```bash
-npm run build
-npm start
-```
-
-## Database connection error
-Verify `.env` credentials and PostgreSQL access.
