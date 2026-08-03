@@ -2,6 +2,9 @@ import { useCallback, useMemo, useEffect, useRef, useState } from "react";
 import AppShell from "../components/Appshell";
 import { useDashboardStore } from "../store/useDashboardStore";
 
+const SIDEBAR_INITIAL_PAGE_SIZE = 40;
+const SIDEBAR_PAGE_SIZE = 20;
+
 function tokenizeName(name) {
   return (name || "")
     .toLowerCase()
@@ -109,6 +112,11 @@ export default function PersonnelPage() {
   const personnelHasMore = useDashboardStore((s) => s.personnelHasMore);
   const personnelLoading = useDashboardStore((s) => s.personnelLoading);
   const personnelLoadingMore = useDashboardStore((s) => s.personnelLoadingMore);
+  const personnelTotal = useDashboardStore((s) => s.personnelTotal) ?? 0;
+  const safeCount = useDashboardStore((s) => s.safeTotal) ?? 0;
+  const notSafeCount = useDashboardStore((s) => s.notSafeTotal) ?? 0;
+  const personnelDepartments =
+    useDashboardStore((s) => s.personnelDepartments) ?? [];
   const setPersonnelSearch = useDashboardStore((s) => s.setPersonnelSearch);
   const setPersonnelDepartment = useDashboardStore(
     (s) => s.setPersonnelDepartment,
@@ -124,13 +132,18 @@ export default function PersonnelPage() {
   const scrollRef = useRef(null);
   const riskScrollRef = useRef(null);
   const riskRequestIdRef = useRef(0);
+  const riskPagingRef = useRef({
+    offset: 0,
+    hasMore: true,
+    loading: false,
+  });
 
   const [searchInput, setSearchInputLocal] = useState(searchTerm || "");
   const [riskPeople, setRiskPeople] = useState([]);
-  const [riskOffset, setRiskOffset] = useState(0);
   const [riskHasMore, setRiskHasMore] = useState(false);
   const [riskLoading, setRiskLoading] = useState(false);
   const [riskLoadingMore, setRiskLoadingMore] = useState(false);
+  const [riskLoadError, setRiskLoadError] = useState(false);
   const [musteringSyncing, setMusteringSyncing] = useState(false);
 
   const rememberScrollPositions = useCallback(() => {
@@ -212,20 +225,36 @@ export default function PersonnelPage() {
     async ({ reset = false } = {}) => {
       if (!emergencyActive) {
         setRiskPeople([]);
-        setRiskOffset(0);
         setRiskHasMore(false);
+        riskPagingRef.current = {
+          offset: 0,
+          hasMore: false,
+          loading: false,
+        };
         return;
       }
 
-      if (riskLoading || riskLoadingMore) return;
+      const paging = riskPagingRef.current;
+
+      if (!reset && (paging.loading || !paging.hasMore)) return;
 
       const requestId = riskRequestIdRef.current + 1;
       riskRequestIdRef.current = requestId;
 
-      const nextOffset = reset ? 0 : riskOffset;
+      const nextOffset = reset ? 0 : paging.offset;
+      const pageSize = reset ? SIDEBAR_INITIAL_PAGE_SIZE : SIDEBAR_PAGE_SIZE;
+
+      riskPagingRef.current = {
+        offset: nextOffset,
+        hasMore: reset ? true : paging.hasMore,
+        loading: true,
+      };
 
       if (reset) {
+        setRiskPeople([]);
         setRiskLoading(true);
+        setRiskLoadingMore(false);
+        setRiskLoadError(false);
       } else {
         setRiskLoadingMore(true);
       }
@@ -233,9 +262,15 @@ export default function PersonnelPage() {
       try {
         const params = new URLSearchParams({
           status: "NOT_SAFE",
-          limit: "20",
+          limit: String(pageSize),
           offset: String(nextOffset),
         });
+
+        const trimmedSearch = String(searchTerm || "").trim();
+        if (trimmedSearch) params.set("search", trimmedSearch);
+        if (selectedDepartment && selectedDepartment !== "ALL") {
+          params.set("dept", selectedDepartment);
+        }
 
         const response = await fetch(
           `/api/emergency-accountability?${params.toString()}`,
@@ -257,18 +292,29 @@ export default function PersonnelPage() {
           const merged = reset ? normalized : [...prev, ...normalized];
           return dedupePeopleByName(merged).filter((p) => p.status !== "SAFE");
         });
-        setRiskOffset(nextOffset + normalized.length);
         setRiskHasMore(Boolean(data.hasMore));
+        riskPagingRef.current = {
+          offset: nextOffset + normalized.length,
+          hasMore: Boolean(data.hasMore),
+          loading: false,
+        };
       } catch {
         console.error("[dashboard] Potential risks could not be loaded.");
+
+        if (riskRequestIdRef.current === requestId) {
+          setRiskLoadError(true);
+          setRiskHasMore(false);
+          riskPagingRef.current.hasMore = false;
+        }
       } finally {
         if (riskRequestIdRef.current === requestId) {
+          riskPagingRef.current.loading = false;
           setRiskLoading(false);
           setRiskLoadingMore(false);
         }
       }
     },
-    [emergencyActive, riskLoading, riskLoadingMore, riskOffset],
+    [emergencyActive, searchTerm, selectedDepartment],
   );
 
   const syncMusteringWithoutJump = useCallback(async () => {
@@ -335,18 +381,30 @@ export default function PersonnelPage() {
   useEffect(() => {
     if (!emergencyActive) {
       setRiskPeople([]);
-      setRiskOffset(0);
       setRiskHasMore(false);
       setRiskLoading(false);
       setRiskLoadingMore(false);
+      setRiskLoadError(false);
+      riskPagingRef.current = {
+        offset: 0,
+        hasMore: false,
+        loading: false,
+      };
       return;
     }
 
-    setRiskPeople([]);
-    setRiskOffset(0);
-    setRiskHasMore(false);
     loadPotentialRisks({ reset: true });
-  }, [emergencyActive]);
+  }, [emergencyActive, notSafeCount, loadPotentialRisks]);
+
+  useEffect(() => {
+    if (!emergencyActive || !riskLoadError) return undefined;
+
+    const retryTimer = window.setTimeout(() => {
+      loadPotentialRisks({ reset: true });
+    }, 3000);
+
+    return () => window.clearTimeout(retryTimer);
+  }, [emergencyActive, riskLoadError, loadPotentialRisks]);
 
   useEffect(() => {
     const el = riskScrollRef.current;
@@ -478,13 +536,15 @@ export default function PersonnelPage() {
       });
   }, [emergencyActive, filtered, riskPeople, searchTerm, selectedDepartment]);
 
-  const personnelTotal = useDashboardStore((s) => s.personnelTotal) ?? 0;
-  const safeCount = useDashboardStore((s) => s.safeTotal) ?? 0;
-  const notSafeCount = useDashboardStore((s) => s.notSafeTotal) ?? 0;
-
   const departments = [
     "ALL",
-    ...new Set(civilians.map((p) => (p.dept || "").trim()).filter(Boolean)),
+    ...(personnelDepartments.length > 0
+      ? personnelDepartments
+      : [
+          ...new Set(
+            civilians.map((p) => (p.dept || "").trim()).filter(Boolean),
+          ),
+        ]),
   ];
 
   return (
@@ -625,7 +685,9 @@ export default function PersonnelPage() {
               {emergencyActive
                 ? riskLoading
                   ? "Loading potential risks..."
-                  : "All Safe"
+                  : riskLoadError
+                    ? "Potential risks could not be loaded. Retrying..."
+                    : "All Safe"
                 : "No personnel found"}
             </div>
           )}

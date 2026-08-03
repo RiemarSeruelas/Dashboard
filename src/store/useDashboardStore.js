@@ -22,6 +22,25 @@ function reportDashboardError(action) {
   console.error(`[dashboard] ${action} failed.`);
 }
 
+function firstValidCount(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+
+    const count = Number(value);
+    if (Number.isFinite(count) && count >= 0) return count;
+  }
+
+  return null;
+}
+
+function normalizeDepartments(rows) {
+  if (!Array.isArray(rows)) return [];
+
+  return [
+    ...new Set(rows.map((value) => String(value || "").trim()).filter(Boolean)),
+  ].sort((a, b) => a.localeCompare(b));
+}
+
 function normalizePerson(row, index = 0, isEmergency = false) {
   if (isEmergency) {
     return {
@@ -151,6 +170,7 @@ export const useDashboardStore = create((set, get) => ({
   personnelTotal: 0,
   safeTotal: 0,
   notSafeTotal: 0,
+  personnelDepartments: [],
   personnelDate: null,
   personnelSearch: "",
   personnelDepartment: "ALL",
@@ -230,18 +250,25 @@ export const useDashboardStore = create((set, get) => ({
       const now = Date.now();
       const lastSync = get().lastMusteringSyncAt ?? 0;
       const shouldSyncMustering = isActive && now - lastSync > 15000;
+      let musteringChanged = false;
 
       if (shouldSyncMustering) {
         const syncRes = await fetch("/api/emergency/sync-mustering", {
           method: "POST",
         });
-        await parseJsonResponse(syncRes);
+        const syncData = await parseJsonResponse(syncRes);
+        musteringChanged =
+          !syncData?.skipped &&
+          (firstValidCount(syncData?.insertedCount) ?? 0) +
+            (firstValidCount(syncData?.updatedCount) ?? 0) >
+            0;
         set({ lastMusteringSyncAt: now });
       }
 
       if (
         stateChanged ||
         forceRefreshPersonnel ||
+        musteringChanged ||
         get().personnel.length === 0
       ) {
         await get().refreshPersonnel({ force: true });
@@ -371,15 +398,25 @@ export const useDashboardStore = create((set, get) => ({
       const mappedPersonnel = rows.map((row, index) =>
         normalizePerson(row, index, isEmergency),
       );
+      const summaryTotal = firstValidCount(data?.summary?.total, data?.total);
+      const summarySafe = firstValidCount(
+        data?.summary?.safeCount,
+        data?.safeCount,
+      );
+      const summaryNotSafe = firstValidCount(
+        data?.summary?.notSafeCount,
+        data?.notSafeCount,
+      );
 
       set({
         personnel: mappedPersonnel,
         personnelOffset: mappedPersonnel.length,
         personnelHasMore: !!data?.hasMore,
         personnelLoading: false,
-        personnelTotal: Number(data?.total) || mappedPersonnel.length,
-        safeTotal: Number(data?.safeCount) || 0,
-        notSafeTotal: Number(data?.notSafeCount) || 0,
+        personnelTotal: summaryTotal ?? mappedPersonnel.length,
+        safeTotal: summarySafe ?? 0,
+        notSafeTotal: summaryNotSafe ?? 0,
+        personnelDepartments: normalizeDepartments(data?.departments),
         lastPersonnelRefreshKey: refreshKey,
         lastPersonnelRefreshAt: now,
       });
@@ -436,16 +473,32 @@ export const useDashboardStore = create((set, get) => ({
       const mapped = rows.map((row, index) =>
         normalizePerson(row, personnel.length + index, emergencyActive),
       );
+      const summaryTotal = firstValidCount(data?.summary?.total, data?.total);
+      const summarySafe = firstValidCount(
+        data?.summary?.safeCount,
+        data?.safeCount,
+      );
+      const summaryNotSafe = firstValidCount(
+        data?.summary?.notSafeCount,
+        data?.notSafeCount,
+      );
+      const responseDepartments = normalizeDepartments(data?.departments);
 
-      set({
+      set((state) => ({
         personnel: [...personnel, ...mapped],
         personnelOffset: personnelOffset + mapped.length,
         personnelHasMore: !!data?.hasMore,
         personnelLoadingMore: false,
-        personnelTotal: Number(data?.total) || personnel.length + mapped.length,
-        safeTotal: Number(data?.safeCount) || 0,
-        notSafeTotal: Number(data?.notSafeCount) || 0,
-      });
+        // Never replace the complete API total with the number of pages that
+        // happen to be loaded in the browser.
+        personnelTotal: summaryTotal ?? state.personnelTotal,
+        safeTotal: summarySafe ?? state.safeTotal,
+        notSafeTotal: summaryNotSafe ?? state.notSafeTotal,
+        personnelDepartments:
+          responseDepartments.length > 0
+            ? responseDepartments
+            : state.personnelDepartments,
+      }));
     } catch {
       reportDashboardError("Additional personnel load");
       set({ personnelLoadingMore: false });
@@ -803,6 +856,7 @@ export const useDashboardStore = create((set, get) => ({
       personnelTotal: 0,
       safeTotal: 0,
       notSafeTotal: 0,
+      personnelDepartments: [],
       personnelDate: null,
       personnelSearch: "",
       personnelDepartment: "ALL",

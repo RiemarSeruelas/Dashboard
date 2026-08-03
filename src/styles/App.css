@@ -534,8 +534,9 @@ button:hover {
 
 .personnel-scroll-area {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 9px;
+  grid-template-columns: repeat(auto-fit, minmax(min(245px, 100%), 1fr));
+  grid-auto-rows: minmax(70px, max-content);
+  gap: 8px;
   align-content: start;
   flex: 1 1 auto;
   min-height: 0;
@@ -567,15 +568,16 @@ button:hover {
 .personnel-card-simple {
   width: 100%;
   min-width: 0;
-  min-height: 62px;
-  padding: 11px 13px;
-  border-radius: 11px;
+  min-height: 70px;
+  height: auto;
+  padding: 9px 11px;
+  border-radius: 10px;
   background: var(--surface-soft);
   border: 1px solid var(--line);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   transition: 0.2s ease;
 }
 
@@ -586,22 +588,25 @@ button:hover {
 }
 
 .personnel-card-left {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 10px;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .personnel-dot {
-  width: 10px;
-  height: 10px;
-  min-width: 10px;
+  width: 8px;
+  height: 8px;
+  min-width: 8px;
+  margin-top: 4px;
   border-radius: 999px;
   background: linear-gradient(135deg, #60a5fa, #22c55e);
   box-shadow: 0 0 0 4px rgba(96, 165, 250, 0.12);
 }
 
 .personnel-card-main {
+  flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -609,32 +614,43 @@ button:hover {
 }
 
 .personnel-name-lg {
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 800;
   line-height: 1.2;
   color: var(--text);
-  word-break: break-word;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  hyphens: auto;
 }
 
 .personnel-group-sm {
-  font-size: 9px;
+  font-size: 8px;
   font-weight: 700;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.6px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: normal;
 }
 
 .status-chip {
+  flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 72px;
-  padding: 6px 10px;
+  min-width: 62px;
+  padding: 5px 8px;
   border-radius: 999px;
   white-space: nowrap;
   text-align: center;
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 900;
+}
+
+.personnel-card-simple > :not(.personnel-card-left) {
+  flex: 0 0 auto;
+  align-self: center;
 }
 
 .status-chip.done {
@@ -2169,23 +2185,23 @@ button:hover {
   }
 
   .personnel-scroll-area {
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
     min-height: 320px;
     height: 70vh;
     max-height: 70vh;
   }
 
   .personnel-card-simple {
-    padding: 11px 12px;
-    min-height: 62px;
+    padding: 9px 10px;
+    min-height: 70px;
   }
 
   .personnel-name-lg {
-    font-size: 14px;
+    font-size: 13px;
   }
 
   .personnel-group-sm {
-    font-size: 9px;
+    font-size: 8px;
   }
 
   .personnel-sidebar-list {

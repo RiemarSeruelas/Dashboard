@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useDashboardStore } from "../store/useDashboardStore";
 
 const MANILA_OFFSET = "+08:00";
+const EMERGENCY_STATUS_POLL_MS = 2000;
 
 function getDefaultScheduleWindow() {
   const now = Date.now();
@@ -43,6 +44,17 @@ function formatManilaDateTime(value) {
     dateStyle: "medium",
     timeStyle: "short",
   });
+}
+
+function scheduleWindowsOverlap(start, finish, existingSchedule) {
+  const existingStart = new Date(existingSchedule?.scheduled_for).getTime();
+  const existingFinish = new Date(existingSchedule?.scheduled_until).getTime();
+
+  if (!Number.isFinite(existingStart) || !Number.isFinite(existingFinish)) {
+    return false;
+  }
+
+  return start.getTime() < existingFinish && finish.getTime() > existingStart;
 }
 
 async function readJson(response) {
@@ -125,7 +137,7 @@ export default function AppShell({
     const interval = window.setInterval(() => {
       fetchSchedules({ quiet: true });
       loadEmergencyStatus?.();
-    }, 15000);
+    }, EMERGENCY_STATUS_POLL_MS);
 
     return () => window.clearInterval(interval);
   }, [fetchSchedules, loadEmergencyStatus]);
@@ -155,6 +167,19 @@ export default function AppShell({
 
     if (finishDate.getTime() <= startDate.getTime()) {
       setScheduleError("Finish must be later than start.");
+      return;
+    }
+
+    const conflictingSchedule = schedules.find((schedule) =>
+      scheduleWindowsOverlap(startDate, finishDate, schedule),
+    );
+
+    if (conflictingSchedule) {
+      setScheduleError(
+        `This window overlaps the existing ${formatManilaDateTime(
+          conflictingSchedule.scheduled_for,
+        )}–${formatManilaDateTime(conflictingSchedule.scheduled_until)} schedule.`,
+      );
       return;
     }
 

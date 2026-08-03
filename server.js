@@ -35,9 +35,17 @@ const pool = new Pool({
 let musteringSyncInFlight = false;
 let lastMusteringSyncAt = 0;
 const MUSTERING_SYNC_COOLDOWN_MS = 15000;
-const EMERGENCY_SCHEDULE_POLL_MS = 15000;
+const EMERGENCY_SCHEDULE_FALLBACK_POLL_MS = Math.max(
+  Number(process.env.EMERGENCY_SCHEDULE_POLL_MS) || 15000,
+  1000,
+);
 let scheduleProcessing = false;
+let scheduleTimer = null;
 let emergencyStartInFlight = null;
+
+function getSchedulerNowIso() {
+  return new Date().toISOString();
+}
 
 function buildNormalCacheKey({ date, search, dept, offset, limit }) {
   return JSON.stringify({
@@ -290,6 +298,58 @@ async function initDb() {
   `);
 }
 
+async function recoverInterruptedEmergencySchedules() {
+  const schedulerNow = getSchedulerNowIso();
+
+  await pool.query(
+    `
+      UPDATE app.emergency_schedules AS schedule
+      SET
+        status = 'STARTED',
+        started_session_id = session.id,
+        result_message = 'Recovered scheduled emergency after backend restart',
+        updated_at = $1::timestamptz
+      FROM app.emergency_sessions AS session
+      WHERE schedule.status = 'STARTING'
+        AND session.is_active = TRUE
+        AND session.source = 'scheduled'
+        AND session.notes = 'Started from schedule ' || schedule.id::text
+    `,
+    [schedulerNow],
+  );
+
+  await pool.query(
+    `
+      UPDATE app.emergency_schedules
+      SET
+        status = CASE
+          WHEN scheduled_until <= $1::timestamptz THEN 'SKIPPED'
+          ELSE 'SCHEDULED'
+        END,
+        result_message = CASE
+          WHEN scheduled_until <= $1::timestamptz
+            THEN 'Scheduled window ended while the backend was unavailable'
+          ELSE 'Recovered and waiting to start'
+        END,
+        updated_at = $1::timestamptz
+      WHERE status = 'STARTING'
+    `,
+    [schedulerNow],
+  );
+
+  await pool.query(
+    `
+      UPDATE app.emergency_schedules
+      SET
+        status = 'STARTED',
+        result_message = 'Recovered automatic finish after backend restart',
+        updated_at = $1::timestamptz
+      WHERE status = 'STOPPING'
+    `,
+    [schedulerNow],
+  );
+}
+
 // --------------------------------------------
 // HELPERS
 // --------------------------------------------
@@ -308,8 +368,8 @@ function getTodayManila() {
   return `${year}-${month}-${day}`;
 }
 
-function getManilaNowSqlString() {
-  const now = new Date();
+function getManilaNowSqlString(value = new Date()) {
+  const now = value instanceof Date ? value : new Date(value);
   const manila = new Date(
     now.toLocaleString("en-US", { timeZone: "Asia/Manila" }),
   );
@@ -881,7 +941,17 @@ app.get("/api/hikvision-normal", async (req, res) => {
       [targetDate],
     );
 
-    let rows = dedupeRowsByCanonicalName(rawResult.rows);
+    const allRows = dedupeRowsByCanonicalName(rawResult.rows);
+    const summary = { total: allRows.length };
+    const departments = [
+      ...new Set(
+        allRows
+          .map((row) => String(row?.PersonGroup || "").trim())
+          .filter(Boolean),
+      ),
+    ].sort((a, b) => a.localeCompare(b));
+
+    let rows = allRows;
 
     if (search) {
       rows = rows.filter((row) => {
@@ -907,10 +977,11 @@ app.get("/api/hikvision-normal", async (req, res) => {
 
     const total = rows.length;
     const pagedRows = rows.slice(offset, offset + limit);
-
     const payload = {
       rows: pagedRows,
       total,
+      summary,
+      departments,
       limit,
       offset,
       hasMore: offset + pagedRows.length < total,
@@ -933,6 +1004,7 @@ app.get("/api/hikvision-normal", async (req, res) => {
 // --------------------------------------------
 async function snapshotCurrentPersonnelToSession(sessionId) {
   const todayManila = getTodayManila();
+  const snapshotNow = getManilaNowSqlString();
 
   const rawResult = await pool.query(
     `
@@ -960,12 +1032,7 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
       "L_Mode",
       "L_TID",
       "C_Date",
-      "C_Time",
-      CASE
-        WHEN LOWER(TRIM("L_Mode")) LIKE '%mustering%'
-          THEN 'SAFE'
-        ELSE 'NOT SAFE'
-      END AS initial_status
+      "C_Time"
     FROM latest
     WHERE rn = 1
       AND TRIM(COALESCE("L_TID"::text, '')) = '1'
@@ -985,8 +1052,6 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
   let insertedCount = 0;
 
   for (const row of dedupedRows) {
-    const status = row.initial_status === "SAFE" ? "SAFE" : "NOT SAFE";
-
     const insertResult = await pool.query(
       `
       INSERT INTO app.emergency_accountability (
@@ -1011,17 +1076,11 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         $5,
         $6,
         $7,
-        $8,
-        CASE
-          WHEN $8 = 'SAFE' THEN (NOW() AT TIME ZONE 'Asia/Manila')
-          ELSE NULL
-        END,
-        CASE
-          WHEN $8 = 'SAFE' THEN 'mustering-snapshot'
-          ELSE NULL
-        END,
-        (NOW() AT TIME ZONE 'Asia/Manila'),
-        (NOW() AT TIME ZONE 'Asia/Manila')
+        'NOT SAFE',
+        NULL,
+        NULL,
+        $8::timestamp,
+        $8::timestamp
       )
       ON CONFLICT (session_id, person_key) DO UPDATE
       SET
@@ -1029,28 +1088,7 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         persongroup = EXCLUDED.persongroup,
         initial_mode = EXCLUDED.initial_mode,
         initial_tid = EXCLUDED.initial_tid,
-        current_status = CASE
-          WHEN EXCLUDED.current_status = 'SAFE'
-            THEN 'SAFE'
-          ELSE app.emergency_accountability.current_status
-        END,
-        marked_safe_at = CASE
-          WHEN EXCLUDED.current_status = 'SAFE'
-            THEN COALESCE(
-              app.emergency_accountability.marked_safe_at,
-              EXCLUDED.marked_safe_at
-            )
-          ELSE app.emergency_accountability.marked_safe_at
-        END,
-        marked_safe_by = CASE
-          WHEN EXCLUDED.current_status = 'SAFE'
-            THEN COALESCE(
-              app.emergency_accountability.marked_safe_by,
-              EXCLUDED.marked_safe_by
-            )
-          ELSE app.emergency_accountability.marked_safe_by
-        END,
-        updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
+        updated_at = $8::timestamp
       `,
       [
         sessionId,
@@ -1060,7 +1098,7 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         row.PersonGroup || null,
         row.L_Mode || null,
         row.L_TID || null,
-        status,
+        snapshotNow,
       ],
     );
 
@@ -1090,7 +1128,14 @@ async function startEmergencySession({ source = "manual", notes = null } = {}) {
     }
 
     const session = await createNewEmergencySession({ source, notes });
-    const insertedCount = await snapshotCurrentPersonnelToSession(session.id);
+    let insertedCount;
+
+    try {
+      insertedCount = await snapshotCurrentPersonnelToSession(session.id);
+    } catch (error) {
+      await stopEmergencySession({ sessionId: session.id }).catch(() => null);
+      throw error;
+    }
 
     clearNormalPersonnelCache();
 
@@ -1149,33 +1194,42 @@ async function processDueEmergencySchedules() {
   scheduleProcessing = true;
 
   try {
-    await pool.query(`
-      UPDATE app.emergency_schedules
-      SET
-        status = 'SKIPPED',
-        result_message = 'Scheduled window ended before the emergency could start',
-        updated_at = NOW()
-      WHERE status = 'SCHEDULED'
-        AND scheduled_until <= NOW()
-    `);
+    const expirationCheckTime = getSchedulerNowIso();
 
-    while (true) {
-      const finishClaim = await pool.query(`
+    await pool.query(
+      `
         UPDATE app.emergency_schedules
         SET
-          status = 'STOPPING',
-          updated_at = NOW()
-        WHERE id = (
-          SELECT id
-          FROM app.emergency_schedules
-          WHERE status = 'STARTED'
-            AND scheduled_until <= NOW()
-          ORDER BY scheduled_until ASC
-          FOR UPDATE SKIP LOCKED
-          LIMIT 1
-        )
-        RETURNING id, scheduled_until, started_session_id
-      `);
+          status = 'SKIPPED',
+          result_message = 'Scheduled window ended before the emergency could start',
+          updated_at = $1::timestamptz
+        WHERE status = 'SCHEDULED'
+          AND scheduled_until <= $1::timestamptz
+      `,
+      [expirationCheckTime],
+    );
+
+    while (true) {
+      const finishCheckTime = getSchedulerNowIso();
+      const finishClaim = await pool.query(
+        `
+          UPDATE app.emergency_schedules
+          SET
+            status = 'STOPPING',
+            updated_at = $1::timestamptz
+          WHERE id = (
+            SELECT id
+            FROM app.emergency_schedules
+            WHERE status = 'STARTED'
+              AND scheduled_until <= $1::timestamptz
+            ORDER BY scheduled_until ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+          )
+          RETURNING id, scheduled_until, started_session_id
+        `,
+        [finishCheckTime],
+      );
 
       const schedule = finishClaim.rows[0];
       if (!schedule) break;
@@ -1191,7 +1245,7 @@ async function processDueEmergencySchedules() {
           SET
             status = 'COMPLETED',
             result_message = $2,
-            updated_at = NOW()
+            updated_at = $3::timestamptz
           WHERE id = $1
         `,
           [
@@ -1199,6 +1253,7 @@ async function processDueEmergencySchedules() {
             endedSession
               ? "Emergency finished automatically"
               : "Scheduled window completed; emergency was already stopped",
+            getSchedulerNowIso(),
           ],
         );
       } catch (error) {
@@ -1208,10 +1263,14 @@ async function processDueEmergencySchedules() {
           SET
             status = 'FAILED',
             result_message = $2,
-            updated_at = NOW()
+            updated_at = $3::timestamptz
           WHERE id = $1
         `,
-          [schedule.id, "Emergency could not be finished automatically"],
+          [
+            schedule.id,
+            "Emergency could not be finished automatically",
+            getSchedulerNowIso(),
+          ],
         );
 
         logServerError("Scheduled emergency finish", error);
@@ -1219,23 +1278,27 @@ async function processDueEmergencySchedules() {
     }
 
     while (true) {
-      const claimResult = await pool.query(`
-        UPDATE app.emergency_schedules
-        SET
-          status = 'STARTING',
-          updated_at = NOW()
-        WHERE id = (
-          SELECT id
-          FROM app.emergency_schedules
-          WHERE status = 'SCHEDULED'
-            AND scheduled_for <= NOW()
-            AND scheduled_until > NOW()
-          ORDER BY scheduled_for ASC
-          FOR UPDATE SKIP LOCKED
-          LIMIT 1
-        )
-        RETURNING id, scheduled_for, scheduled_until
-      `);
+      const startCheckTime = getSchedulerNowIso();
+      const claimResult = await pool.query(
+        `
+          UPDATE app.emergency_schedules
+          SET
+            status = 'STARTING',
+            updated_at = $1::timestamptz
+          WHERE id = (
+            SELECT id
+            FROM app.emergency_schedules
+            WHERE status = 'SCHEDULED'
+              AND scheduled_for <= $1::timestamptz
+              AND scheduled_until > $1::timestamptz
+            ORDER BY scheduled_for ASC
+            FOR UPDATE SKIP LOCKED
+            LIMIT 1
+          )
+          RETURNING id, scheduled_for, scheduled_until
+        `,
+        [startCheckTime],
+      );
 
       const schedule = claimResult.rows[0];
       if (!schedule) break;
@@ -1250,10 +1313,10 @@ async function processDueEmergencySchedules() {
             SET
               status = 'SKIPPED',
               result_message = 'Emergency was already active',
-              updated_at = NOW()
+              updated_at = $2::timestamptz
             WHERE id = $1
           `,
-            [schedule.id],
+            [schedule.id, getSchedulerNowIso()],
           );
           continue;
         }
@@ -1270,10 +1333,10 @@ async function processDueEmergencySchedules() {
             status = 'STARTED',
             started_session_id = $2,
             result_message = 'Emergency started automatically',
-            updated_at = NOW()
+            updated_at = $3::timestamptz
           WHERE id = $1
         `,
-          [schedule.id, result.session.id],
+          [schedule.id, result.session.id, getSchedulerNowIso()],
         );
       } catch (error) {
         await pool.query(
@@ -1282,10 +1345,14 @@ async function processDueEmergencySchedules() {
           SET
             status = 'FAILED',
             result_message = $2,
-            updated_at = NOW()
+            updated_at = $3::timestamptz
           WHERE id = $1
         `,
-          [schedule.id, "Emergency could not be started automatically"],
+          [
+            schedule.id,
+            "Emergency could not be started automatically",
+            getSchedulerNowIso(),
+          ],
         );
 
         logServerError("Scheduled emergency start", error);
@@ -1294,6 +1361,67 @@ async function processDueEmergencySchedules() {
   } finally {
     scheduleProcessing = false;
   }
+}
+
+async function getNextEmergencyScheduleDelay() {
+  const result = await pool.query(`
+    SELECT MIN(due_at) AS due_at
+    FROM (
+      SELECT scheduled_for AS due_at
+      FROM app.emergency_schedules
+      WHERE status = 'SCHEDULED'
+
+      UNION ALL
+
+      SELECT scheduled_until AS due_at
+      FROM app.emergency_schedules
+      WHERE status = 'STARTED'
+    ) AS due_schedules
+  `);
+
+  const dueAt = result.rows[0]?.due_at;
+  if (!dueAt) return EMERGENCY_SCHEDULE_FALLBACK_POLL_MS;
+
+  const dueTime = new Date(dueAt).getTime();
+  if (!Number.isFinite(dueTime)) return EMERGENCY_SCHEDULE_FALLBACK_POLL_MS;
+
+  return Math.min(
+    Math.max(dueTime - Date.now(), 0),
+    EMERGENCY_SCHEDULE_FALLBACK_POLL_MS,
+  );
+}
+
+function queueEmergencyScheduleCheck(delayMs = 0) {
+  if (scheduleTimer) {
+    clearTimeout(scheduleTimer);
+  }
+
+  scheduleTimer = setTimeout(
+    async () => {
+      scheduleTimer = null;
+
+      try {
+        await processDueEmergencySchedules();
+      } catch (error) {
+        logServerError("Schedule check", error);
+      }
+
+      let nextDelay = EMERGENCY_SCHEDULE_FALLBACK_POLL_MS;
+
+      try {
+        nextDelay = await getNextEmergencyScheduleDelay();
+      } catch (error) {
+        logServerError("Schedule timer", error);
+      }
+
+      queueEmergencyScheduleCheck(nextDelay);
+    },
+    Math.max(Number(delayMs) || 0, 0),
+  );
+}
+
+function wakeEmergencyScheduleWorker() {
+  queueEmergencyScheduleCheck(0);
 }
 
 app.post("/api/emergency/start", async (req, res) => {
@@ -1350,6 +1478,8 @@ app.get("/api/emergency/schedules", async (req, res) => {
 });
 
 app.post("/api/emergency/schedules", async (req, res) => {
+  let client = null;
+
   try {
     const {
       scheduledFor,
@@ -1382,7 +1512,41 @@ app.post("/api/emergency/schedules", async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    // Serialize schedule creation so simultaneous requests cannot both pass
+    // the overlap check and create conflicting emergency windows.
+    await client.query("SELECT pg_advisory_xact_lock($1::bigint)", [20260803]);
+
+    const conflictResult = await client.query(
+      `
+      SELECT
+        id,
+        scheduled_for,
+        scheduled_until,
+        status
+      FROM app.emergency_schedules
+      WHERE status IN ('SCHEDULED', 'STARTING', 'STARTED', 'STOPPING')
+        AND scheduled_for < $2::timestamptz
+        AND scheduled_until > $1::timestamptz
+      ORDER BY scheduled_for ASC
+      LIMIT 1
+      FOR UPDATE
+      `,
+      [scheduledDate.toISOString(), scheduledUntilDate.toISOString()],
+    );
+
+    if (conflictResult.rows[0]) {
+      await client.query("ROLLBACK");
+
+      return res.status(409).json({
+        error: "This time overlaps an existing emergency schedule",
+        conflict: conflictResult.rows[0],
+      });
+    }
+
+    const result = await client.query(
       `
       INSERT INTO app.emergency_schedules (
         scheduled_for,
@@ -1392,7 +1556,14 @@ app.post("/api/emergency/schedules", async (req, res) => {
         created_at,
         updated_at
       )
-      VALUES ($1::timestamptz, $2::timestamptz, 'SCHEDULED', $3, NOW(), NOW())
+      VALUES (
+        $1::timestamptz,
+        $2::timestamptz,
+        'SCHEDULED',
+        $3,
+        $4::timestamptz,
+        $4::timestamptz
+      )
       RETURNING
         id,
         scheduled_for,
@@ -1405,12 +1576,22 @@ app.post("/api/emergency/schedules", async (req, res) => {
         scheduledDate.toISOString(),
         scheduledUntilDate.toISOString(),
         String(createdBy || "operator").slice(0, 100),
+        getSchedulerNowIso(),
       ],
     );
 
+    await client.query("COMMIT");
+
+    wakeEmergencyScheduleWorker();
     res.status(201).json({ schedule: result.rows[0] });
   } catch (err) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
     sendInternalError(res, "Emergency schedule creation", err);
+  } finally {
+    client?.release();
   }
 });
 
@@ -1428,12 +1609,12 @@ app.delete("/api/emergency/schedules/:id", async (req, res) => {
       SET
         status = 'CANCELLED',
         result_message = 'Cancelled from dashboard',
-        updated_at = NOW()
+        updated_at = $2::timestamptz
       WHERE id = $1
         AND status = 'SCHEDULED'
       RETURNING id, scheduled_for, status
     `,
-      [scheduleId],
+      [scheduleId, getSchedulerNowIso()],
     );
 
     if (!result.rows[0]) {
@@ -1442,6 +1623,7 @@ app.delete("/api/emergency/schedules/:id", async (req, res) => {
       });
     }
 
+    wakeEmergencyScheduleWorker();
     res.json({ success: true, schedule: result.rows[0] });
   } catch (err) {
     sendInternalError(res, "Emergency schedule cancellation", err);
@@ -1484,6 +1666,8 @@ app.get("/api/emergency-accountability", async (req, res) => {
         total: 0,
         safeCount: 0,
         notSafeCount: 0,
+        summary: { total: 0, safeCount: 0, notSafeCount: 0 },
+        departments: [],
         limit: 20,
         offset: 0,
         hasMore: false,
@@ -1520,7 +1704,22 @@ app.get("/api/emergency-accountability", async (req, res) => {
       [session.id],
     );
 
-    let rows = result.rows;
+    const allRows = result.rows;
+    const summary = {
+      total: allRows.length,
+      safeCount: allRows.filter((row) => row.current_status === "SAFE").length,
+      notSafeCount: allRows.filter((row) => row.current_status !== "SAFE")
+        .length,
+    };
+    const departments = [
+      ...new Set(
+        allRows
+          .map((row) => String(row?.persongroup || "").trim())
+          .filter(Boolean),
+      ),
+    ].sort((a, b) => a.localeCompare(b));
+
+    let rows = allRows;
 
     if (search) {
       rows = rows.filter((row) => {
@@ -1566,6 +1765,8 @@ app.get("/api/emergency-accountability", async (req, res) => {
       total,
       safeCount,
       notSafeCount,
+      summary,
+      departments,
       limit,
       offset,
       hasMore: offset + pagedRows.length < total,
@@ -1825,11 +2026,22 @@ async function syncMusteringScansToActiveSession() {
     };
   }
 
-  const todayManila = getTodayManila();
+  const scanWindowEnd = getManilaNowSqlString();
+  const scanWindowStart = getManilaNowSqlString(
+    new Date(Date.now() - 5 * 60 * 1000),
+  );
 
   const musterResult = await pool.query(
     `
-    WITH latest_today AS (
+    WITH active_window AS (
+      SELECT
+        GREATEST(started_at, $1::timestamp) AS window_start,
+        $2::timestamp AS window_end
+      FROM app.emergency_sessions
+      WHERE id = $3
+        AND is_active = TRUE
+    ),
+    latest_window_scan AS (
       SELECT
         "L_UID",
         "Person",
@@ -1838,13 +2050,19 @@ async function syncMusteringScansToActiveSession() {
         "L_TID",
         "C_Date",
         "C_Time",
+        ("C_Date"::date + "C_Time"::time) AS scanned_at,
         ROW_NUMBER() OVER (
           PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
           ORDER BY "C_Date" DESC, "C_Time" DESC
         ) AS rn
       FROM "hkvision"."tbhikvision"
-      WHERE "C_Date"::date = $1::date
+      CROSS JOIN active_window
+      WHERE "C_Date"::date BETWEEN $1::timestamp::date AND $2::timestamp::date
         AND COALESCE(TRIM("Person"), '') <> ''
+        AND ("C_Date"::date + "C_Time"::time) BETWEEN
+          active_window.window_start AND active_window.window_end
+        AND TRIM(COALESCE("L_TID"::text, '')) = '1'
+        AND LOWER(TRIM("L_Mode")) LIKE '%mustering%'
     )
     SELECT
       "L_UID",
@@ -1853,14 +2071,13 @@ async function syncMusteringScansToActiveSession() {
       "L_Mode",
       "L_TID",
       "C_Date",
-      "C_Time"
-    FROM latest_today
+      "C_Time",
+      to_char(scanned_at, 'YYYY-MM-DD HH24:MI:SS') AS scanned_at
+    FROM latest_window_scan
     WHERE rn = 1
-      AND TRIM(COALESCE("L_TID"::text, '')) = '1'
-      AND LOWER(TRIM("L_Mode")) LIKE '% %'
-    ORDER BY "C_Time" DESC
+    ORDER BY scanned_at DESC
     `,
-    [todayManila],
+    [scanWindowStart, scanWindowEnd, session.id],
   );
 
   const dedupedRows = dedupeRowsByCanonicalName(musterResult.rows);
@@ -1894,10 +2111,10 @@ async function syncMusteringScansToActiveSession() {
         $6,
         $7,
         'SAFE',
-        (NOW() AT TIME ZONE 'Asia/Manila'),
+        $8::timestamp,
         'mustering-scanner',
-        (NOW() AT TIME ZONE 'Asia/Manila'),
-        (NOW() AT TIME ZONE 'Asia/Manila')
+        $9::timestamp,
+        $9::timestamp
       )
       ON CONFLICT (session_id, person_key) DO UPDATE
       SET
@@ -1914,7 +2131,7 @@ async function syncMusteringScansToActiveSession() {
           app.emergency_accountability.marked_safe_by,
           EXCLUDED.marked_safe_by
         ),
-        updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
+        updated_at = $9::timestamp
       RETURNING
         xmax = 0 AS inserted
       `,
@@ -1926,6 +2143,8 @@ async function syncMusteringScansToActiveSession() {
         row.PersonGroup || null,
         row.L_Mode || null,
         row.L_TID || null,
+        row.scanned_at || scanWindowEnd,
+        scanWindowEnd,
       ],
     );
 
@@ -2123,6 +2342,7 @@ app.use((req, res, next) => {
 async function startServer() {
   try {
     await initDb();
+    await recoverInterruptedEmergencySchedules();
     console.log("✅ DB INIT COMPLETE");
   } catch (err) {
     logServerError("Database initialization", err);
@@ -2134,16 +2354,7 @@ async function startServer() {
 
   app.listen(PORT, () => {
     console.log(`🚀 Backend running on http://localhost:${PORT}`);
-
-    processDueEmergencySchedules().catch((err) => {
-      logServerError("Initial schedule check", err);
-    });
-
-    setInterval(() => {
-      processDueEmergencySchedules().catch((err) => {
-        logServerError("Schedule check", err);
-      });
-    }, EMERGENCY_SCHEDULE_POLL_MS);
+    wakeEmergencyScheduleWorker();
   });
 }
 
