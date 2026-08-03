@@ -12,14 +12,17 @@ The PostgreSQL database and required tables in the `app` schema must already exi
 Create a file named `.env` in the main project folder:
 
 ```env
-PORT=5053
-APP_PORT=5053
-
-DB_HOST=your_database_server
-DB_PORT=5432
-DB_NAME=your_database
-DB_USER=your_database_user
+DB_HOST=host.docker.internal
+PORT=your_app_port
+DB_NAME=your_database_name
 DB_PASSWORD=your_database_password
+DB_USER=postgres
+DB_PORT=your_database_port
+APP_PORT=your_app_port
+APP_PASSWORD=your_dashboard_passcode
+TZ=Asia/Manila
+
+
 ```
 
 Replace the example database values with the correct credentials. Do not add spaces around the `=` signs.
@@ -77,42 +80,4 @@ docker compose up -d --build --force-recreate
 
 ```powershell
 docker compose down
-```
-
-## Troubleshooting
-
-### Port 5053 Is Already in Use
-
-Check the currently running containers:
-
-```powershell
-docker ps
-```
-
-Stop the old Emergency Dashboard container before starting this application again.
-
-### Database Connection Error
-
-Verify these values in `.env`:
-
-- `DB_HOST`
-- `DB_PORT`
-- `DB_NAME`
-- `DB_USER`
-- `DB_PASSWORD`
-
-Also confirm that PostgreSQL allows connections from the computer running Docker.
-
-### Check Backend Health
-
-Open this address in a browser:
-
-```text
-http://localhost:5053/api/health
-```
-
-If the health page does not load, view the application logs:
-
-```powershell
-docker compose logs --tail=100
 ```
