@@ -86,6 +86,15 @@ Use History to open a completed session. Use Analytics to review totals and prog
 - Scheduled emergencies run automatically while the application service is running; the browser does not need to remain open.
 - The dashboard uses Manila time.
 
+## Reminders and Useful Facts
+
+- The PostgreSQL server clock is currently approximately four hours behind Manila time. The dashboard compensates for this when checking scheduled emergency Start and Finish times.
+- This compensation does not change the database clock. Some timestamps created directly by PostgreSQL may still appear approximately four hours earlier than Manila time.
+- Scheduled emergencies can start and finish automatically even when the dashboard is closed, as long as the application is running in Docker.
+- A qualifying mustering scan may take a short time to appear because the source system and dashboard synchronize periodically.
+- Every new emergency begins with all tracked personnel marked **Not Safe**. Only a qualifying mustering scan or an authorized manual update can mark someone **Safe**.
+- Entrance scans never count as mustering confirmation.
+
 ## Running the Dashboard with Docker
 
 This section is for the person responsible for starting the dashboard computer.
@@ -107,13 +116,11 @@ DB_PORT=your_database_port
 DB_NAME=your_database_name
 DB_USER=your_database_user
 DB_PASSWORD=your_database_password
-PORT=5053
-APP_PORT=5053
+PORT=your_app_port
+APP_PORT=your_app_port
 APP_PASSWORD=your_dashboard_passcode
 TZ=Asia/Manila
 ```
-
-Do not add spaces around the `=` signs. Keep this file private.
 
 ### Start the Application
 
@@ -128,16 +135,16 @@ docker compose up -d --build
 On the computer running Docker:
 
 ```text
-http://localhost:5053
+http://localhost:your_app_port
 ```
 
 From another computer on the same network:
 
 ```text
-http://SERVER_IP:5053
+http://SERVER_IP:your_app_port
 ```
 
-Replace `SERVER_IP` with the IP address of the computer running Docker.
+Replace `SERVER_IP` with the IP address of the computer running Docker and `your_app_port` with the configured application port.
 
 ### Check the Application
 
@@ -198,6 +205,5 @@ Contact the system owner or database administrator to verify the database connec
 ## Security
 
 - Share the dashboard passcode only with authorized personnel.
-- Keep `.env` private.
 - Do not expose the database directly to untrusted networks.
 - Sign out when the dashboard is no longer being used.
