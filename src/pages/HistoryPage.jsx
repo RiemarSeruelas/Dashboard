@@ -12,11 +12,7 @@ function normalizePerson(person, index = 0) {
       person?.l_uid ??
       person?.L_UID ??
       `person-${index + 1}`,
-    name:
-      person?.name ??
-      person?.person ??
-      person?.Person ??
-      "Unknown",
+    name: person?.name ?? person?.person ?? person?.Person ?? "Unknown",
     dept:
       person?.dept ??
       person?.persongroup ??
@@ -29,10 +25,7 @@ function normalizePerson(person, index = 0) {
       person?.mode ??
       person?.L_Mode ??
       "Unknown Role",
-    status:
-      person?.status ??
-      person?.current_status ??
-      "NOT SAFE",
+    status: person?.status ?? person?.current_status ?? "NOT SAFE",
   };
 }
 
@@ -52,16 +45,16 @@ function formatManilaDateTime(value) {
   });
 }
 
-
 export default function HistoryPage() {
   const history = useDashboardStore((s) => s.history) ?? [];
-  const resetDashboard = useDashboardStore((s) => s.resetDashboard);
   const fetchHistory = useDashboardStore((s) => s.fetchHistory);
   const fetchSessionDetails = useDashboardStore((s) => s.fetchSessionDetails);
   const emergencyActive = useDashboardStore((s) => s.emergencyActive);
   const triggerEmergency = useDashboardStore((s) => s.triggerEmergency);
   const clearEmergency = useDashboardStore((s) => s.clearEmergency);
-  const emergencyActionLoading = useDashboardStore((s) => s.emergencyActionLoading);
+  const emergencyActionLoading = useDashboardStore(
+    (s) => s.emergencyActionLoading,
+  );
 
   useEffect(() => {
     fetchHistory?.();
@@ -113,12 +106,7 @@ export default function HistoryPage() {
 
     worksheet.addRow([]);
 
-    const headerRow = worksheet.addRow([
-      "ID",
-      "Name",
-      "Department",
-      "Status",
-    ]);
+    const headerRow = worksheet.addRow(["ID", "Name", "Department", "Status"]);
 
     headerRow.font = { bold: true, color: { argb: "FFFFFFFF" } };
     headerRow.alignment = { horizontal: "center", vertical: "middle" };
@@ -143,11 +131,14 @@ export default function HistoryPage() {
       eventItem?.personnel ??
       [];
 
-    if ((!Array.isArray(rawRows) || rawRows.length === 0) && eventItem?.id != null) {
+    if (
+      (!Array.isArray(rawRows) || rawRows.length === 0) &&
+      eventItem?.id != null
+    ) {
       try {
         rawRows = await fetchSessionDetails?.(eventItem.id);
-      } catch (err) {
-        console.error("❌ DOWNLOAD SESSION DETAILS ERROR:", err);
+      } catch {
+        console.error("[dashboard] Session export data could not be loaded.");
         rawRows = [];
       }
     }
@@ -230,21 +221,22 @@ export default function HistoryPage() {
   const avgSafe =
     history.length > 0
       ? Math.round(
-          history.reduce((a, b) => a + (Number(b?.safe) || 0), 0) / history.length
+          history.reduce((a, b) => a + (Number(b?.safe) || 0), 0) /
+            history.length,
         )
       : 0;
 
   const avgNotSafe =
     history.length > 0
       ? Math.round(
-          history.reduce((a, b) => a + (Number(b?.notSafe) || 0), 0) / history.length
+          history.reduce((a, b) => a + (Number(b?.notSafe) || 0), 0) /
+            history.length,
         )
       : 0;
 
   return (
     <AppShell
       title="Emergency Event Logs"
-      subtitle="Historical incident records, duration tracking, and export-ready summaries"
       summaryStats={[
         { value: history.length, label: "TOTAL EVENTS" },
         { value: avgSafe, label: "AVG SAFE", variant: "green" },
@@ -252,39 +244,68 @@ export default function HistoryPage() {
         { value: "DB", label: "STORAGE", variant: "amber" },
       ]}
       actionSlot={
-  <button
-    className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
-    disabled={emergencyActionLoading}
-    style={{
-      opacity: emergencyActionLoading ? 0.65 : 1,
-      cursor: emergencyActionLoading ? "wait" : "pointer",
-    }}
-    onClick={() => {
-      if (emergencyActionLoading) return;
+        <button
+          className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
+          disabled={emergencyActionLoading}
+          style={{
+            opacity: emergencyActionLoading ? 0.65 : 1,
+            cursor: emergencyActionLoading ? "wait" : "pointer",
+          }}
+          onClick={() => {
+            if (emergencyActionLoading) return;
 
-      if (emergencyActive) {
-        clearEmergency?.();
-      } else {
-        triggerEmergency?.();
+            if (emergencyActive) {
+              clearEmergency?.();
+            } else {
+              triggerEmergency?.();
+            }
+          }}
+        >
+          {emergencyActionLoading
+            ? "Loading..."
+            : emergencyActive
+              ? "Stop"
+              : "Start"}
+        </button>
       }
-    }}
-  >
-    {emergencyActionLoading
-      ? "Loading..."
-      : emergencyActive
-      ? "Stop"
-      : "Start"}
-  </button>
-}
+      workspaceClassName="two-column-workspace history-workspace"
     >
       <aside className="panel left-panel">
-        <div className="panel-title">History Controls</div>
+        <div className="panel-title">Latest Snapshot</div>
 
-        <div className="mini-info-card">
-          <div className="mini-info-title">How it works</div>
-          <div className="mini-info-text">
-            Click any incident row to download its Excel report.
-          </div>
+        <div className="metric-stack">
+          {history[0] ? (
+            <>
+              <div className="metric-card">
+                <div className="metric-label">Timestamp</div>
+                <div className="metric-value latest-snapshot-time">
+                  {formatManilaDateTime(history[0]?.timestamp)}
+                </div>
+              </div>
+
+              <div className="metric-card">
+                <div className="metric-label">Duration</div>
+                <div className="metric-value">
+                  {history[0]?.duration ?? "Unknown"}
+                </div>
+              </div>
+
+              <div className="metric-card">
+                <div className="metric-label">Export</div>
+                <button
+                  className="primary-action-btn"
+                  onClick={() => downloadIncidentExcel(history[0])}
+                >
+                  Download Latest
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="metric-card">
+              <div className="metric-label">Status</div>
+              <div className="metric-value warn-text">No Saved Event</div>
+            </div>
+          )}
         </div>
       </aside>
 
@@ -349,45 +370,6 @@ export default function HistoryPage() {
           </div>
         </div>
       </section>
-
-      <aside className="panel right-panel">
-        <div className="panel-title">Latest Snapshot</div>
-
-        <div className="metric-stack">
-          {history[0] ? (
-            <>
-              <div className="metric-card">
-                <div className="metric-label">Timestamp</div>
-                <div className="metric-value" style={{ fontSize: 18 }}>
-                         {formatManilaDateTime(history[0]?.timestamp)}
-                </div>
-              </div>
-
-              <div className="metric-card">
-                <div className="metric-label">Duration</div>
-                <div className="metric-value">
-                  {history[0]?.duration ?? "Unknown"}
-                </div>
-              </div>
-
-              <div className="metric-card">
-                <div className="metric-label">Export</div>
-                <button
-                  className="primary-action-btn"
-                  onClick={() => downloadIncidentExcel(history[0])}
-                >
-                  Download Latest
-                </button>
-              </div>
-            </>
-          ) : (
-            <div className="metric-card">
-              <div className="metric-label">Status</div>
-              <div className="metric-value warn-text">No Saved Event</div>
-            </div>
-          )}
-        </div>
-      </aside>
     </AppShell>
   );
 }

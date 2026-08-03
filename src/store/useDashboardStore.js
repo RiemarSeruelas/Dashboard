@@ -1,5 +1,6 @@
 import { create } from "zustand";
 
+const INITIAL_PAGE_SIZE = 40;
 const PAGE_SIZE = 20;
 
 function getTodayManilaClient() {
@@ -17,35 +18,8 @@ function getTodayManilaClient() {
   return `${year}-${month}-${day}`;
 }
 
-function normalizeDateOnly(value) {
-  if (!value) return "";
-
-  const raw = String(value);
-
-  // Plain DB date: 2026-05-13
-  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
-    return raw;
-  }
-
-  // ISO timestamp: convert using Manila timezone
-  const date = new Date(raw);
-
-  if (!Number.isNaN(date.getTime())) {
-    const parts = new Intl.DateTimeFormat("en-CA", {
-      timeZone: "Asia/Manila",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).formatToParts(date);
-
-    const year = parts.find((p) => p.type === "year")?.value;
-    const month = parts.find((p) => p.type === "month")?.value;
-    const day = parts.find((p) => p.type === "day")?.value;
-
-    return `${year}-${month}-${day}`;
-  }
-
-  return raw.slice(0, 10);
+function reportDashboardError(action) {
+  console.error(`[dashboard] ${action} failed.`);
 }
 
 function normalizePerson(row, index = 0, isEmergency = false) {
@@ -67,11 +41,7 @@ function normalizePerson(row, index = 0, isEmergency = false) {
         row?.PersonGroup ??
         row?.department ??
         "Unknown Department",
-      role:
-        row?.initial_mode ??
-        row?.L_Mode ??
-        row?.mode ??
-        "Unknown Role",
+      role: row?.initial_mode ?? row?.L_Mode ?? row?.mode ?? "Unknown Role",
       status: row?.current_status ?? row?.status ?? "NOT SAFE",
       isRescue: false,
       phone: row?.phone ?? "",
@@ -99,11 +69,7 @@ function normalizePerson(row, index = 0, isEmergency = false) {
       row?.persongroup ??
       row?.department ??
       "Unknown Department",
-    role:
-      row?.L_Mode ??
-      row?.initial_mode ??
-      row?.mode ??
-      "Unknown Role",
+    role: row?.L_Mode ?? row?.initial_mode ?? row?.mode ?? "Unknown Role",
     status: row?.status ?? "IN PLANT",
     isRescue: false,
     phone: row?.phone ?? "",
@@ -222,7 +188,10 @@ export const useDashboardStore = create((set, get) => ({
   setRescueSearch: async (term) => {
     const normalized = (term || "").trim();
     set({ rescueSearch: normalized });
-    await get().fetchRescuePersonnel({ search: normalized, dept: get().rescueDepartment });
+    await get().fetchRescuePersonnel({
+      search: normalized,
+      dept: get().rescueDepartment,
+    });
   },
 
   setRescueDepartment: async (dept) => {
@@ -263,84 +232,86 @@ export const useDashboardStore = create((set, get) => ({
       const shouldSyncMustering = isActive && now - lastSync > 15000;
 
       if (shouldSyncMustering) {
-        const syncRes = await fetch(
-          "/api/emergency/sync-mustering",
-          { method: "POST" }
-        );
+        const syncRes = await fetch("/api/emergency/sync-mustering", {
+          method: "POST",
+        });
         await parseJsonResponse(syncRes);
         set({ lastMusteringSyncAt: now });
       }
 
-      if (stateChanged || forceRefreshPersonnel || get().personnel.length === 0) {
+      if (
+        stateChanged ||
+        forceRefreshPersonnel ||
+        get().personnel.length === 0
+      ) {
         await get().refreshPersonnel({ force: true });
       }
-    } catch (err) {
-      console.error("❌ LOAD EMERGENCY STATUS ERROR:", err);
+    } catch {
+      reportDashboardError("Emergency status refresh");
     } finally {
       set({ statusLoading: false });
     }
   },
 
   triggerEmergency: async () => {
-  if (get().emergencyActionLoading) return;
+    if (get().emergencyActionLoading) return;
 
-  set({ emergencyActionLoading: true });
+    set({ emergencyActionLoading: true });
 
-  try {
-    const res = await fetch("/api/emergency/start", {
-      method: "POST",
-    });
+    try {
+      const res = await fetch("/api/emergency/start", {
+        method: "POST",
+      });
 
-    const data = await parseJsonResponse(res);
+      const data = await parseJsonResponse(res);
 
-    set({
-      emergencyActive: true,
-      emergencyStartTime: data?.activeSession?.started_at
-        ? new Date(data.activeSession.started_at).getTime()
-        : Date.now(),
-      lastPersonnelRefreshKey: "",
-      lastPersonnelRefreshAt: 0,
-    });
+      set({
+        emergencyActive: true,
+        emergencyStartTime: data?.activeSession?.started_at
+          ? new Date(data.activeSession.started_at).getTime()
+          : Date.now(),
+        lastPersonnelRefreshKey: "",
+        lastPersonnelRefreshAt: 0,
+      });
 
-    await get().refreshPersonnel({ force: true });
-    await get().refreshHistory();
-    await get().fetchRescuePersonnel();
-  } catch (err) {
-    console.error("❌ TRIGGER EMERGENCY ERROR:", err);
-  } finally {
-    set({ emergencyActionLoading: false });
-  }
-},
+      await get().refreshPersonnel({ force: true });
+      await get().refreshHistory();
+      await get().fetchRescuePersonnel();
+    } catch {
+      reportDashboardError("Emergency start");
+    } finally {
+      set({ emergencyActionLoading: false });
+    }
+  },
 
-clearEmergency: async () => {
-  if (get().emergencyActionLoading) return;
+  clearEmergency: async () => {
+    if (get().emergencyActionLoading) return;
 
-  set({ emergencyActionLoading: true });
+    set({ emergencyActionLoading: true });
 
-  try {
-    const res = await fetch("/api/emergency/stop", {
-      method: "POST",
-    });
+    try {
+      const res = await fetch("/api/emergency/stop", {
+        method: "POST",
+      });
 
-    await parseJsonResponse(res);
+      await parseJsonResponse(res);
 
-    set({
-      emergencyActive: false,
-      emergencyStartTime: null,
-      lastPersonnelRefreshKey: "",
-      lastPersonnelRefreshAt: 0,
-    });
+      set({
+        emergencyActive: false,
+        emergencyStartTime: null,
+        lastPersonnelRefreshKey: "",
+        lastPersonnelRefreshAt: 0,
+      });
 
-    await get().refreshPersonnel({ force: true });
-    await get().refreshHistory();
-    await get().fetchRescuePersonnel();
-  } catch (err) {
-    console.error("❌ CLEAR EMERGENCY ERROR:", err);
-  } finally {
-    set({ emergencyActionLoading: false });
-  }
-},
-
+      await get().refreshPersonnel({ force: true });
+      await get().refreshHistory();
+      await get().fetchRescuePersonnel();
+    } catch {
+      reportDashboardError("Emergency stop");
+    } finally {
+      set({ emergencyActionLoading: false });
+    }
+  },
 
   refreshPersonnel: async ({ force = false } = {}) => {
     if (get().personnelLoading && !force) return;
@@ -381,29 +352,24 @@ clearEmergency: async () => {
         ? buildPagingUrl(
             "/api/emergency-accountability",
             0,
-            PAGE_SIZE,
+            INITIAL_PAGE_SIZE,
             {
               search: personnelSearch,
               dept: personnelDepartment,
-            }
+            },
           )
-        : buildPagingUrl(
-            "/api/hikvision-normal",
-            0,
-            PAGE_SIZE,
-            {
-              date: personnelDate,
-              search: searchTerm,
-              dept: selectedDepartment,
-            }
-          );
+        : buildPagingUrl("/api/hikvision-normal", 0, INITIAL_PAGE_SIZE, {
+            date: personnelDate,
+            search: searchTerm,
+            dept: selectedDepartment,
+          });
 
       const res = await fetch(endpoint);
       const data = await parseJsonResponse(res);
 
       const rows = Array.isArray(data?.rows) ? data.rows : [];
       const mappedPersonnel = rows.map((row, index) =>
-        normalizePerson(row, index, isEmergency)
+        normalizePerson(row, index, isEmergency),
       );
 
       set({
@@ -417,8 +383,8 @@ clearEmergency: async () => {
         lastPersonnelRefreshKey: refreshKey,
         lastPersonnelRefreshAt: now,
       });
-    } catch (error) {
-      console.error("❌ REFRESH PERSONNEL ERROR:", error);
+    } catch {
+      reportDashboardError("Personnel refresh");
       set({
         personnelLoading: false,
         personnelHasMore: false,
@@ -455,25 +421,20 @@ clearEmergency: async () => {
             {
               search: personnelSearch,
               dept: personnelDepartment,
-            }
+            },
           )
-        : buildPagingUrl(
-            "/api/hikvision-normal",
-            personnelOffset,
-            PAGE_SIZE,
-            {
-              date: personnelDate,
-              search: searchTerm,
-              dept: selectedDepartment,
-            }
-          );
+        : buildPagingUrl("/api/hikvision-normal", personnelOffset, PAGE_SIZE, {
+            date: personnelDate,
+            search: searchTerm,
+            dept: selectedDepartment,
+          });
 
       const res = await fetch(endpoint);
       const data = await parseJsonResponse(res);
 
       const rows = Array.isArray(data?.rows) ? data.rows : [];
       const mapped = rows.map((row, index) =>
-        normalizePerson(row, personnel.length + index, emergencyActive)
+        normalizePerson(row, personnel.length + index, emergencyActive),
       );
 
       set({
@@ -485,8 +446,8 @@ clearEmergency: async () => {
         safeTotal: Number(data?.safeCount) || 0,
         notSafeTotal: Number(data?.notSafeCount) || 0,
       });
-    } catch (err) {
-      console.error("❌ LOAD MORE PERSONNEL ERROR:", err);
+    } catch {
+      reportDashboardError("Additional personnel load");
       set({ personnelLoadingMore: false });
     }
   },
@@ -505,20 +466,20 @@ clearEmergency: async () => {
   },
 
   setPersonnelSearch: async (term) => {
-  const normalized = (term || "").trim();
+    const normalized = (term || "").trim();
 
-  set({
-    personnelSearch: normalized,
-    personnelOffset: 0,
-    personnelHasMore: true,
-    lastPersonnelRefreshKey: "",
-    lastPersonnelRefreshAt: 0,
-  });
+    set({
+      personnelSearch: normalized,
+      personnelOffset: 0,
+      personnelHasMore: true,
+      lastPersonnelRefreshKey: "",
+      lastPersonnelRefreshAt: 0,
+    });
 
-  if (normalized.length === 0 || normalized.length >= 3) {
-    await get().refreshPersonnel({ force: true });
-  }
-},
+    if (normalized.length === 0 || normalized.length >= 3) {
+      await get().refreshPersonnel({ force: true });
+    }
+  },
 
   setPersonnelDepartment: async (dept) => {
     set({
@@ -539,12 +500,12 @@ clearEmergency: async () => {
     const person = state.personnel.find((p) => p.id === id);
 
     if (!person) {
-      console.error("❌ Person not found in local state:", id);
+      reportDashboardError("Personnel status update");
       return;
     }
 
     if (!person.personKey) {
-      console.error("❌ Missing personKey, cannot update DB:", person);
+      reportDashboardError("Personnel status update");
       return;
     }
 
@@ -552,7 +513,7 @@ clearEmergency: async () => {
 
     set((currentState) => ({
       personnel: currentState.personnel.map((p) =>
-        p.id === id ? { ...p, status: nextStatus } : p
+        p.id === id ? { ...p, status: nextStatus } : p,
       ),
       safeTotal:
         nextStatus === "SAFE"
@@ -584,8 +545,8 @@ clearEmergency: async () => {
       }
 
       await get().refreshHistory();
-    } catch (err) {
-      console.error("❌ UPDATE STATUS ERROR:", err);
+    } catch {
+      reportDashboardError("Personnel status update");
 
       set({
         personnel: state.personnel,
@@ -597,16 +558,14 @@ clearEmergency: async () => {
 
   fetchSessionDetails: async (sessionId) => {
     try {
-      const res = await fetch(
-        `/api/emergency/history/${sessionId}`
-      );
+      const res = await fetch(`/api/emergency/history/${sessionId}`);
       const rows = await parseJsonResponse(res);
 
       return Array.isArray(rows)
         ? rows.map((row, index) => normalizePerson(row, index, true))
         : [];
-    } catch (err) {
-      console.error("❌ FETCH SESSION DETAILS ERROR:", err);
+    } catch {
+      reportDashboardError("Session details load");
       return [];
     }
   },
@@ -621,9 +580,7 @@ clearEmergency: async () => {
     });
 
     try {
-      const res = await fetch(
-        buildPagingUrl("/api/emergency/history", 0)
-      );
+      const res = await fetch(buildPagingUrl("/api/emergency/history", 0));
       const data = await parseJsonResponse(res);
 
       const rows = Array.isArray(data?.rows) ? data.rows : [];
@@ -635,7 +592,7 @@ clearEmergency: async () => {
         duration: formatDuration(
           row?.started_at,
           row?.ended_at,
-          row?.is_active
+          row?.is_active,
         ),
         active: !!row?.is_active,
         safe: Number(row?.safe_count) || 0,
@@ -650,8 +607,8 @@ clearEmergency: async () => {
         historyLoading: false,
         historyTotal: Number(data?.total) || mappedHistory.length,
       });
-    } catch (err) {
-      console.error("❌ REFRESH HISTORY ERROR:", err);
+    } catch {
+      reportDashboardError("History refresh");
       set({
         history: [],
         historyLoading: false,
@@ -676,7 +633,7 @@ clearEmergency: async () => {
 
     try {
       const res = await fetch(
-        buildPagingUrl("/api/emergency/history", historyOffset)
+        buildPagingUrl("/api/emergency/history", historyOffset),
       );
       const data = await parseJsonResponse(res);
 
@@ -689,7 +646,7 @@ clearEmergency: async () => {
         duration: formatDuration(
           row?.started_at,
           row?.ended_at,
-          row?.is_active
+          row?.is_active,
         ),
         active: !!row?.is_active,
         safe: Number(row?.safe_count) || 0,
@@ -704,8 +661,8 @@ clearEmergency: async () => {
         historyLoadingMore: false,
         historyTotal: Number(data?.total) || history.length + mapped.length,
       });
-    } catch (err) {
-      console.error("❌ LOAD MORE HISTORY ERROR:", err);
+    } catch {
+      reportDashboardError("Additional history load");
       set({ historyLoadingMore: false });
     }
   },
@@ -716,176 +673,116 @@ clearEmergency: async () => {
 
   fetchAnalytics: async (sessionId) => {
     try {
-      const res = await fetch(
-        `/api/emergency/analytics/${sessionId}`
-      );
+      const res = await fetch(`/api/emergency/analytics/${sessionId}`);
       const rows = await parseJsonResponse(res);
 
       set({ analytics: Array.isArray(rows) ? rows : [] });
-    } catch (err) {
-      console.error("❌ FETCH ANALYTICS ERROR:", err);
+    } catch {
+      reportDashboardError("Analytics load");
       set({ analytics: [] });
     }
   },
 
-fetchRescuePersonnel: async ({ search = "", dept = "ALL" } = {}) => {
-  try {
-    const params = new URLSearchParams();
+  fetchRescuePersonnel: async ({ search = "", dept = "ALL" } = {}) => {
+    try {
+      const params = new URLSearchParams();
 
-    const todayManila = getTodayManilaClient();
+      const todayManila = getTodayManilaClient();
 
-    params.append("date", todayManila);
+      params.append("date", todayManila);
 
-    if (search) params.append("search", search);
-    if (dept && dept !== "ALL") params.append("dept", dept);
+      if (search) params.append("search", search);
+      if (dept && dept !== "ALL") params.append("dept", dept);
 
-    params.append("_t", String(Date.now()));
+      const url = `/api/rescue-team?${params.toString()}`;
 
-    const url = `/api/rescue-team?${params.toString()}`;
+      const res = await fetch(url, {
+        cache: "no-store",
+        headers: {
+          "Cache-Control": "no-cache",
+          Pragma: "no-cache",
+        },
+      });
 
-    console.log("🔥 FETCHING RESCUE TEAM FROM:", url);
+      const rows = await parseJsonResponse(res);
 
-    const res = await fetch(url, {
-      cache: "no-store",
-      headers: {
-        "Cache-Control": "no-cache",
-        Pragma: "no-cache",
-      },
-    });
+      const mapped = (Array.isArray(rows) ? rows : []).map((row) => ({
+        id: row.id,
+        personKey: `rescue|${row.id}`,
+        name: row.name ?? "Unknown",
+        dept: row.dept ?? "Unknown Department",
+        role: row.role ?? "Responder",
+        status: row.inside ? "INSIDE" : "OUTSIDE",
+        isRescue: true,
+        phone: row.phone ?? "",
+        inside: !!row.inside,
+      }));
 
-    const rows = await parseJsonResponse(res);
+      set({ rescuePersonnel: mapped });
+    } catch {
+      reportDashboardError("Rescue personnel load");
+      set({ rescuePersonnel: [] });
+    }
+  },
 
-    console.log("🔥 RESCUE RAW ROWS FROM BACKEND:", rows);
-    console.log("🔥 FRONTEND TODAY MANILA:", todayManila);
+  addRescuePersonnel: async (personData) => {
+    try {
+      const res = await fetch("/api/rescue-team", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(personData),
+      });
 
-    const safeRows = Array.isArray(rows)
-  ? rows.filter((row) => {
-      const rowDate = normalizeDateOnly(row.last_date);
-      const backendToday = normalizeDateOnly(
-        row.server_today_manila || row.filter_date
-      );
-      const compareToday = backendToday || todayManila;
+      await parseJsonResponse(res);
 
-      const rowTid = String(row.last_tid ?? "").trim();
-      const rowMode = String(row.last_mode ?? "").trim().toLowerCase();
+      await get().fetchRescuePersonnel({
+        search: get().rescueSearch,
+        dept: get().rescueDepartment,
+      });
+    } catch {
+      reportDashboardError("Rescue personnel creation");
+    }
+  },
 
-      const isToday = rowDate === compareToday;
-      const isIn = rowTid === "1";
-      const isAllowedLocation =
-        rowMode === "flane 1 entrance" ||
-        rowMode === "flane 2 entrance" ||
-        rowMode.includes("mustering");
+  updateRescuePersonnel: async (id, updates) => {
+    try {
+      const res = await fetch(`/api/rescue-team/${id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(updates),
+      });
 
-      const keep = isToday && isIn && isAllowedLocation;
+      await parseJsonResponse(res);
 
-      if (!keep) {
-        console.warn("🚫 FRONTEND BLOCKED BAD RESCUE ROW:", {
-          name: row.name,
-          hikvisionName: row.hikvision_name,
-          lastDate: row.last_date,
-          rowDate,
-          backendToday,
-          frontendTodayManila: todayManila,
-          compareToday,
-          lastTid: row.last_tid,
-          lastMode: row.last_mode,
-          isToday,
-          isIn,
-          isAllowedLocation,
-          routeVersion: row.route_version,
-        });
-      }
+      await get().fetchRescuePersonnel({
+        search: get().rescueSearch,
+        dept: get().rescueDepartment,
+      });
+    } catch {
+      reportDashboardError("Rescue personnel update");
+    }
+  },
 
-      return keep;
-    })
-  : [];
+  removeRescuePersonnel: async (id) => {
+    try {
+      const res = await fetch(`/api/rescue-team/${id}`, {
+        method: "DELETE",
+      });
 
-    const mapped = safeRows.map((row) => ({
-      id: row.id,
-      personKey: `rescue|${row.id}`,
-      name: row.name ?? row.hikvision_name ?? "Unknown",
-      dept: row.dept ?? row.hikvision_group ?? "Unknown Department",
-      role: row.role ?? "Responder",
-      status: row.inside ? "INSIDE" : "OUTSIDE",
-      isRescue: true,
-      phone: row.phone ?? "",
-      email: row.email ?? "",
-      inside: !!row.inside,
-      lastMode: row.last_mode ?? "",
-      lastTime: row.last_time ?? "",
-      lastDate: row.last_date ?? "",
-      lastTid: row.last_tid ?? "",
-      lUid: row.l_uid ?? row.hikvision_l_uid ?? "",
-      hikvisionName: row.hikvision_name ?? "",
-    }));
+      await parseJsonResponse(res);
 
-    console.log("✅ RESCUE SAFE ROWS DISPLAYED:", mapped);
-
-    set({ rescuePersonnel: mapped });
-  } catch (err) {
-    console.error("❌ FETCH RESCUE PERSONNEL ERROR:", err);
-    set({ rescuePersonnel: [] });
-  }
-},
-
-addRescuePersonnel: async (personData) => {
-  try {
-    const res = await fetch("/api/rescue-team", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(personData),
-    });
-
-    await parseJsonResponse(res);
-
-    await get().fetchRescuePersonnel({
-      search: get().rescueSearch,
-      dept: get().rescueDepartment,
-    });
-  } catch (err) {
-    console.error("❌ ADD RESCUE PERSONNEL ERROR:", err);
-  }
-},
-
-updateRescuePersonnel: async (id, updates) => {
-  try {
-    const res = await fetch(`/api/rescue-team/${id}`, {
-      method: "PUT",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(updates),
-    });
-
-    await parseJsonResponse(res);
-
-    await get().fetchRescuePersonnel({
-      search: get().rescueSearch,
-      dept: get().rescueDepartment,
-    });
-  } catch (err) {
-    console.error("❌ UPDATE RESCUE PERSONNEL ERROR:", err);
-  }
-},
-
-removeRescuePersonnel: async (id) => {
-  try {
-    const res = await fetch(`/api/rescue-team/${id}`, {
-      method: "DELETE",
-    });
-
-    await parseJsonResponse(res);
-
-    await get().fetchRescuePersonnel({
-      search: get().rescueSearch,
-      dept: get().rescueDepartment,
-    });
-  } catch (err) {
-    console.error("❌ REMOVE RESCUE PERSONNEL ERROR:", err);
-  }
-},
+      await get().fetchRescuePersonnel({
+        search: get().rescueSearch,
+        dept: get().rescueDepartment,
+      });
+    } catch {
+      reportDashboardError("Rescue personnel removal");
+    }
+  },
 
   resetDashboard: () => {
     set({

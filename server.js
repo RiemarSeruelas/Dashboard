@@ -12,10 +12,12 @@ const CACHE_TTL_MS = 10000;
 
 const { Pool } = pg;
 const app = express();
+const APP_PASSWORD = process.env.APP_PASSWORD?.trim() ?? "";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+app.disable("x-powered-by");
 app.use(cors());
 app.use(express.json({ limit: "25mb" }));
 
@@ -24,13 +26,18 @@ const pool = new Pool({
   host: process.env.DB_HOST,
   database: process.env.DB_NAME,
   password: process.env.DB_PASSWORD,
-  port: Number(process.env.DB_PORT),
+  port: Number(process.env.DB_PORT) || 5432,
+  max: Number(process.env.DB_POOL_MAX) || 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
-let emergencyActiveState = false;
 let musteringSyncInFlight = false;
 let lastMusteringSyncAt = 0;
 const MUSTERING_SYNC_COOLDOWN_MS = 15000;
+const EMERGENCY_SCHEDULE_POLL_MS = 15000;
+let scheduleProcessing = false;
+let emergencyStartInFlight = null;
 
 function buildNormalCacheKey({ date, search, dept, offset, limit }) {
   return JSON.stringify({
@@ -73,6 +80,22 @@ function clearNormalPersonnelCache() {
   normalPersonnelCache.clear();
 }
 
+function logServerError(context, error) {
+  const code = String(error?.code || "UNKNOWN")
+    .replace(/[^A-Z0-9_-]/gi, "")
+    .slice(0, 40);
+
+  console.error(`[server] ${context} failed (${code || "UNKNOWN"}).`);
+}
+
+function sendInternalError(res, context, error, extra = {}) {
+  logServerError(context, error);
+  return res.status(500).json({
+    ...extra,
+    error: "Internal server error",
+  });
+}
+
 // --------------------------------------------
 // DB INIT
 // --------------------------------------------
@@ -98,12 +121,12 @@ async function initDb() {
   );
 `);
 
-await pool.query(`
+  await pool.query(`
   ALTER TABLE app.rescue_team
   ADD COLUMN IF NOT EXISTS l_uid TEXT;
 `);
 
-await pool.query(`
+  await pool.query(`
   CREATE INDEX IF NOT EXISTS idx_rescue_team_l_uid
   ON app.rescue_team (l_uid);
 `);
@@ -155,6 +178,78 @@ await pool.query(`
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS app.emergency_schedules (
+      id BIGSERIAL PRIMARY KEY,
+      scheduled_for TIMESTAMPTZ NOT NULL,
+      scheduled_until TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL DEFAULT 'SCHEDULED'
+        CHECK (
+          status IN (
+            'SCHEDULED',
+            'STARTING',
+            'STARTED',
+            'STOPPING',
+            'COMPLETED',
+            'CANCELLED',
+            'SKIPPED',
+            'FAILED'
+          )
+        ),
+      created_by TEXT NOT NULL DEFAULT 'operator',
+      started_session_id BIGINT NULL
+        REFERENCES app.emergency_sessions(id) ON DELETE SET NULL,
+      result_message TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+  `);
+
+  await pool.query(`
+    ALTER TABLE app.emergency_schedules
+    ADD COLUMN IF NOT EXISTS scheduled_until TIMESTAMPTZ;
+
+    UPDATE app.emergency_schedules
+    SET scheduled_until = scheduled_for + INTERVAL '1 hour'
+    WHERE scheduled_until IS NULL;
+
+    ALTER TABLE app.emergency_schedules
+    ALTER COLUMN scheduled_until SET NOT NULL;
+
+    ALTER TABLE app.emergency_schedules
+    DROP CONSTRAINT IF EXISTS emergency_schedules_status_check;
+
+    ALTER TABLE app.emergency_schedules
+    ADD CONSTRAINT emergency_schedules_status_check
+    CHECK (
+      status IN (
+        'SCHEDULED',
+        'STARTING',
+        'STARTED',
+        'STOPPING',
+        'COMPLETED',
+        'CANCELLED',
+        'SKIPPED',
+        'FAILED'
+      )
+    );
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS app."Emergency-logs" (
+      id BIGSERIAL PRIMARY KEY,
+      session_id TEXT NOT NULL UNIQUE,
+      ip_address TEXT,
+      browser TEXT,
+      operating_system TEXT,
+      device_type TEXT,
+      first_path TEXT,
+      user_agent TEXT,
+      opened_at TIMESTAMP NOT NULL
+        DEFAULT (NOW() AT TIME ZONE 'Asia/Manila')
+    );
+  `);
+
+  await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_emergency_sessions_active
     ON app.emergency_sessions (is_active, started_at DESC);
   `);
@@ -177,6 +272,21 @@ await pool.query(`
   await pool.query(`
     CREATE INDEX IF NOT EXISTS idx_evacuation_maps_active_created
     ON app.evacuation_maps (is_active, created_at DESC);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_emergency_schedules_due
+    ON app.emergency_schedules (status, scheduled_for);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_emergency_schedules_finish_due
+    ON app.emergency_schedules (status, scheduled_until);
+  `);
+
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_emergency_logs_opened_at
+    ON app."Emergency-logs" (opened_at DESC);
   `);
 }
 
@@ -201,7 +311,7 @@ function getTodayManila() {
 function getManilaNowSqlString() {
   const now = new Date();
   const manila = new Date(
-    now.toLocaleString("en-US", { timeZone: "Asia/Manila" })
+    now.toLocaleString("en-US", { timeZone: "Asia/Manila" }),
   );
 
   const yyyy = manila.getFullYear();
@@ -236,7 +346,9 @@ function buildPersonKey(name) {
 
 function searchMatchesName(name, search) {
   const rawName = String(name || "");
-  const rawSearch = String(search || "").trim().toLowerCase();
+  const rawSearch = String(search || "")
+    .trim()
+    .toLowerCase();
 
   if (!rawSearch) return true;
 
@@ -272,7 +384,10 @@ function dedupeRowsByCanonicalName(rows = []) {
   return Array.from(map.values());
 }
 
-async function createNewEmergencySession() {
+async function createNewEmergencySession({
+  source = "manual",
+  notes = null,
+} = {}) {
   const nowManila = getManilaNowSqlString();
 
   await pool.query(
@@ -284,7 +399,7 @@ async function createNewEmergencySession() {
       updated_at = $1::timestamp
     WHERE is_active = TRUE
   `,
-    [nowManila]
+    [nowManila],
   );
 
   const createResult = await pool.query(
@@ -294,6 +409,7 @@ async function createNewEmergencySession() {
       started_at,
       is_active,
       source,
+      notes,
       created_at,
       updated_at
     )
@@ -301,16 +417,61 @@ async function createNewEmergencySession() {
       'EMG-' || to_char($1::timestamp, 'YYYYMMDD-HH24MISS'),
       $1::timestamp,
       TRUE,
-      'system',
+      $2,
+      $3,
       $1::timestamp,
       $1::timestamp
     )
     RETURNING id, session_key, started_at, is_active
   `,
-    [nowManila]
+    [nowManila, source, notes],
   );
 
   return createResult.rows[0];
+}
+
+function getRequestIp(req) {
+  const forwarded = String(req.headers["x-forwarded-for"] || "")
+    .split(",")[0]
+    .trim();
+
+  return (forwarded || req.socket?.remoteAddress || req.ip || "").replace(
+    /^::ffff:/,
+    "",
+  );
+}
+
+function detectBrowser(userAgent) {
+  const ua = String(userAgent || "");
+
+  if (/Edg\//i.test(ua)) return "Microsoft Edge";
+  if (/OPR\//i.test(ua)) return "Opera";
+  if (/Chrome\//i.test(ua)) return "Google Chrome";
+  if (/Firefox\//i.test(ua)) return "Mozilla Firefox";
+  if (/Safari\//i.test(ua) && !/Chrome\//i.test(ua)) return "Safari";
+
+  return "Unknown";
+}
+
+function detectOperatingSystem(userAgent) {
+  const ua = String(userAgent || "");
+
+  if (/Windows/i.test(ua)) return "Windows";
+  if (/Android/i.test(ua)) return "Android";
+  if (/iPhone|iPad|iPod/i.test(ua)) return "iOS";
+  if (/Mac OS X|Macintosh/i.test(ua)) return "macOS";
+  if (/Linux/i.test(ua)) return "Linux";
+
+  return "Unknown";
+}
+
+function detectDeviceType(userAgent) {
+  const ua = String(userAgent || "");
+
+  if (/iPad|Tablet/i.test(ua)) return "Tablet";
+  if (/Mobi|Android|iPhone|iPod/i.test(ua)) return "Mobile";
+
+  return "Desktop";
 }
 
 async function getActiveSession() {
@@ -349,14 +510,7 @@ app.get("/api/rescue-team", async (req, res) => {
           name,
           role,
           dept,
-          phone,
-          email,
-          time_in,
-          time_out,
-          img,
-          is_active,
-          created_at,
-          updated_at
+          phone
         FROM app.rescue_team
         WHERE is_active = TRUE
       ),
@@ -365,12 +519,10 @@ app.get("/api/rescue-team", async (req, res) => {
         SELECT
           h."L_UID",
           h."Person",
-          h."PersonGroup",
           h."L_Mode",
           h."L_TID",
           h."C_Date",
-          h."C_Time",
-          $1::date AS today_manila
+          h."C_Time"
         FROM "hkvision"."tbhikvision" h
         WHERE h."C_Date"::date = $1::date
           AND COALESCE(TRIM(h."Person"), '') <> ''
@@ -379,27 +531,13 @@ app.get("/api/rescue-team", async (req, res) => {
       matched_today_scans AS (
         SELECT
           rt.id,
-          rt.l_uid,
           rt.name,
           rt.role,
           rt.dept,
           rt.phone,
-          rt.email,
-          rt.time_in,
-          rt.time_out,
-          rt.img,
-          rt.is_active,
-          rt.created_at,
-          rt.updated_at,
-
-          h."L_UID" AS hikvision_l_uid,
-          h."Person" AS hikvision_name,
-          h."PersonGroup" AS hikvision_group,
           h."L_Mode" AS last_mode,
           h."L_TID" AS last_tid,
           h."C_Date" AS last_c_date,
-          h."C_Time" AS last_c_time,
-          h.today_manila,
 
           ROW_NUMBER() OVER (
             PARTITION BY rt.id
@@ -420,37 +558,15 @@ app.get("/api/rescue-team", async (req, res) => {
 
       SELECT
         id,
-        l_uid,
         name,
         role,
         dept,
         phone,
-        email,
-        time_in,
-        time_out,
-        img,
-        is_active,
-        created_at,
-        updated_at,
-
-        hikvision_l_uid,
-        hikvision_name,
-        hikvision_group,
-        last_mode,
-        last_tid,
-
-        TO_CHAR(last_c_date::date, 'YYYY-MM-DD') AS last_date,
-        last_c_time::text AS last_time,
-
-        today_manila::text AS server_today_manila,
-        today_manila::text AS filter_date,
-
-        'RESCUE_COPY_PERSONNEL_DATE_V5' AS route_version,
         TRUE AS inside
 
       FROM matched_today_scans
       WHERE rn = 1
-        AND last_c_date::date = today_manila
+        AND last_c_date::date = $1::date
         AND TRIM(COALESCE(last_tid::text, '')) = '1'
         AND (
           LOWER(TRIM(last_mode)) IN (
@@ -471,31 +587,14 @@ app.get("/api/rescue-team", async (req, res) => {
         )
       ORDER BY name ASC
       `,
-      [targetDate, search, dept]
+      [targetDate, search, dept],
     );
 
     res.set("Cache-Control", "no-store");
 
-    console.log("🔥 RESCUE ROUTE VERSION: RESCUE_COPY_PERSONNEL_DATE_V5");
-    console.log("🔥 RESCUE TARGET DATE FROM FRONTEND:", targetDate);
-    console.log("🔥 RESCUE ROW COUNT:", result.rows.length);
-    console.log(
-      "🔥 RESCUE ROWS:",
-      result.rows.map((r) => ({
-        name: r.name,
-        hikvisionName: r.hikvision_name,
-        lastDate: r.last_date,
-        today: r.server_today_manila,
-        lastTid: r.last_tid,
-        lastMode: r.last_mode,
-        routeVersion: r.route_version,
-      }))
-    );
-
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ RESCUE TEAM GET ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Rescue team load", err);
   }
 });
 
@@ -510,8 +609,8 @@ app.post("/api/rescue-team", async (req, res) => {
 
     const nowManila = getManilaNowSqlString();
 
-const result = await pool.query(
-  `
+    const result = await pool.query(
+      `
   INSERT INTO app.rescue_team (
     l_uid,
     name,
@@ -566,7 +665,7 @@ const result = await pool.query(
         timeOut ? String(timeOut).trim() : null,
         img || null,
         nowManila,
-      ]
+      ],
     );
 
     res.json({
@@ -574,8 +673,7 @@ const result = await pool.query(
       member: result.rows[0],
     });
   } catch (err) {
-    console.error("❌ RESCUE TEAM CREATE ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Rescue team creation", err);
   }
 });
 app.put("/api/rescue-team/:id", async (req, res) => {
@@ -594,7 +692,7 @@ app.put("/api/rescue-team/:id", async (req, res) => {
       isActive,
       lUid,
     } = req.body;
- 
+
     const nowManila = getManilaNowSqlString();
     const result = await pool.query(
       `
@@ -640,7 +738,7 @@ app.put("/api/rescue-team/:id", async (req, res) => {
         img || null,
         typeof isActive === "boolean" ? isActive : null,
         nowManila,
-      ]
+      ],
     );
 
     if (result.rows.length === 0) {
@@ -652,8 +750,7 @@ app.put("/api/rescue-team/:id", async (req, res) => {
       member: result.rows[0],
     });
   } catch (err) {
-    console.error("❌ RESCUE TEAM UPDATE ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Rescue team update", err);
   }
 });
 
@@ -663,8 +760,8 @@ app.delete("/api/rescue-team/:id", async (req, res) => {
 
     const nowManila = getManilaNowSqlString();
 
-const result = await pool.query(
-  `
+    const result = await pool.query(
+      `
   UPDATE app.rescue_team
   SET
     is_active = FALSE,
@@ -672,8 +769,8 @@ const result = await pool.query(
   WHERE id = $1
   RETURNING id
   `,
-  [id, nowManila]
-);
+      [id, nowManila],
+    );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Rescue member not found" });
@@ -684,8 +781,7 @@ const result = await pool.query(
       removedId: result.rows[0].id,
     });
   } catch (err) {
-    console.error("❌ RESCUE TEAM DELETE ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Rescue team removal", err);
   }
 });
 
@@ -701,7 +797,7 @@ async function getLatestNormalDbSignature(targetDate) {
     WHERE "C_Date"::date = $1::date
       AND COALESCE(TRIM("Person"), '') <> ''
     `,
-    [targetDate]
+    [targetDate],
   );
 
   return result.rows[0]?.latest_signature || "";
@@ -782,7 +878,7 @@ app.get("/api/hikvision-normal", async (req, res) => {
         )
       ORDER BY "C_Time" DESC
       `,
-      [targetDate]
+      [targetDate],
     );
 
     let rows = dedupeRowsByCanonicalName(rawResult.rows);
@@ -806,7 +902,7 @@ app.get("/api/hikvision-normal", async (req, res) => {
     }
 
     rows.sort((a, b) =>
-      String(a?.Person || "").localeCompare(String(b?.Person || ""))
+      String(a?.Person || "").localeCompare(String(b?.Person || "")),
     );
 
     const total = rows.length;
@@ -828,8 +924,7 @@ app.get("/api/hikvision-normal", async (req, res) => {
       latestDbSignature,
     });
   } catch (err) {
-    console.error("❌ NORMAL GET ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Normal personnel load", err);
   }
 });
 
@@ -883,7 +978,7 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
       )
     ORDER BY "C_Time" DESC
     `,
-    [todayManila]
+    [todayManila],
   );
 
   const dedupedRows = dedupeRowsByCanonicalName(rawResult.rows);
@@ -966,73 +1061,390 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
         row.L_Mode || null,
         row.L_TID || null,
         status,
-      ]
+      ],
     );
 
     insertedCount += insertResult.rowCount;
   }
 
-  console.log("✅ SNAPSHOT INSERTED/UPDATED:", insertedCount);
-
   return insertedCount;
 }
 
 // --------------------------------------------
-// TEMP emergency controls
+// EMERGENCY CONTROLS
 // --------------------------------------------
-app.post("/api/emergency/start", async (req, res) => {
-  try {
-    emergencyActiveState = true;
+async function startEmergencySession({ source = "manual", notes = null } = {}) {
+  if (emergencyStartInFlight) {
+    return emergencyStartInFlight;
+  }
 
-    const session = await createNewEmergencySession();
+  emergencyStartInFlight = (async () => {
+    const existingSession = await getActiveSession();
+
+    if (existingSession) {
+      return {
+        session: existingSession,
+        insertedCount: 0,
+        alreadyActive: true,
+      };
+    }
+
+    const session = await createNewEmergencySession({ source, notes });
     const insertedCount = await snapshotCurrentPersonnelToSession(session.id);
 
     clearNormalPersonnelCache();
 
+    return {
+      session,
+      insertedCount,
+      alreadyActive: false,
+    };
+  })();
+
+  try {
+    return await emergencyStartInFlight;
+  } finally {
+    emergencyStartInFlight = null;
+  }
+}
+
+async function stopEmergencySession({ sessionId = null } = {}) {
+  const nowManila = getManilaNowSqlString();
+  const params = [nowManila];
+  let targetClause = `
+    id = (
+      SELECT id
+      FROM app.emergency_sessions
+      WHERE is_active = TRUE
+      ORDER BY started_at DESC
+      LIMIT 1
+    )
+  `;
+
+  if (sessionId != null) {
+    params.push(sessionId);
+    targetClause = "id = $2::bigint AND is_active = TRUE";
+  }
+
+  const result = await pool.query(
+    `
+    UPDATE app.emergency_sessions
+    SET
+      is_active = FALSE,
+      ended_at = $1::timestamp,
+      updated_at = $1::timestamp
+    WHERE ${targetClause}
+    RETURNING *
+  `,
+    params,
+  );
+
+  clearNormalPersonnelCache();
+
+  return result.rows[0] || null;
+}
+
+async function processDueEmergencySchedules() {
+  if (scheduleProcessing) return;
+  scheduleProcessing = true;
+
+  try {
+    await pool.query(`
+      UPDATE app.emergency_schedules
+      SET
+        status = 'SKIPPED',
+        result_message = 'Scheduled window ended before the emergency could start',
+        updated_at = NOW()
+      WHERE status = 'SCHEDULED'
+        AND scheduled_until <= NOW()
+    `);
+
+    while (true) {
+      const finishClaim = await pool.query(`
+        UPDATE app.emergency_schedules
+        SET
+          status = 'STOPPING',
+          updated_at = NOW()
+        WHERE id = (
+          SELECT id
+          FROM app.emergency_schedules
+          WHERE status = 'STARTED'
+            AND scheduled_until <= NOW()
+          ORDER BY scheduled_until ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+        )
+        RETURNING id, scheduled_until, started_session_id
+      `);
+
+      const schedule = finishClaim.rows[0];
+      if (!schedule) break;
+
+      try {
+        const endedSession = await stopEmergencySession({
+          sessionId: schedule.started_session_id,
+        });
+
+        await pool.query(
+          `
+          UPDATE app.emergency_schedules
+          SET
+            status = 'COMPLETED',
+            result_message = $2,
+            updated_at = NOW()
+          WHERE id = $1
+        `,
+          [
+            schedule.id,
+            endedSession
+              ? "Emergency finished automatically"
+              : "Scheduled window completed; emergency was already stopped",
+          ],
+        );
+      } catch (error) {
+        await pool.query(
+          `
+          UPDATE app.emergency_schedules
+          SET
+            status = 'FAILED',
+            result_message = $2,
+            updated_at = NOW()
+          WHERE id = $1
+        `,
+          [schedule.id, "Emergency could not be finished automatically"],
+        );
+
+        logServerError("Scheduled emergency finish", error);
+      }
+    }
+
+    while (true) {
+      const claimResult = await pool.query(`
+        UPDATE app.emergency_schedules
+        SET
+          status = 'STARTING',
+          updated_at = NOW()
+        WHERE id = (
+          SELECT id
+          FROM app.emergency_schedules
+          WHERE status = 'SCHEDULED'
+            AND scheduled_for <= NOW()
+            AND scheduled_until > NOW()
+          ORDER BY scheduled_for ASC
+          FOR UPDATE SKIP LOCKED
+          LIMIT 1
+        )
+        RETURNING id, scheduled_for, scheduled_until
+      `);
+
+      const schedule = claimResult.rows[0];
+      if (!schedule) break;
+
+      try {
+        const activeSession = await getActiveSession();
+
+        if (activeSession) {
+          await pool.query(
+            `
+            UPDATE app.emergency_schedules
+            SET
+              status = 'SKIPPED',
+              result_message = 'Emergency was already active',
+              updated_at = NOW()
+            WHERE id = $1
+          `,
+            [schedule.id],
+          );
+          continue;
+        }
+
+        const result = await startEmergencySession({
+          source: "scheduled",
+          notes: `Started from schedule ${schedule.id}`,
+        });
+
+        await pool.query(
+          `
+          UPDATE app.emergency_schedules
+          SET
+            status = 'STARTED',
+            started_session_id = $2,
+            result_message = 'Emergency started automatically',
+            updated_at = NOW()
+          WHERE id = $1
+        `,
+          [schedule.id, result.session.id],
+        );
+      } catch (error) {
+        await pool.query(
+          `
+          UPDATE app.emergency_schedules
+          SET
+            status = 'FAILED',
+            result_message = $2,
+            updated_at = NOW()
+          WHERE id = $1
+        `,
+          [schedule.id, "Emergency could not be started automatically"],
+        );
+
+        logServerError("Scheduled emergency start", error);
+      }
+    }
+  } finally {
+    scheduleProcessing = false;
+  }
+}
+
+app.post("/api/emergency/start", async (req, res) => {
+  try {
+    const result = await startEmergencySession({
+      source: "manual",
+      notes: "Started from dashboard",
+    });
+
     res.json({
       emergencyActive: true,
-      activeSession: session,
-      snapshotInserted: insertedCount,
+      activeSession: result.session,
+      snapshotInserted: result.insertedCount,
+      alreadyActive: result.alreadyActive,
     });
   } catch (err) {
-    console.error("❌ START EMERGENCY ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency start", err);
   }
 });
 
 app.post("/api/emergency/stop", async (req, res) => {
   try {
-    emergencyActiveState = false;
-    const nowManila = getManilaNowSqlString();
-
-    const result = await pool.query(
-      `
-      UPDATE app.emergency_sessions
-      SET
-        is_active = FALSE,
-        ended_at = $1::timestamp,
-        updated_at = $1::timestamp
-      WHERE id = (
-        SELECT id
-        FROM app.emergency_sessions
-        WHERE is_active = TRUE
-        ORDER BY started_at DESC
-        LIMIT 1
-      )
-      RETURNING *
-    `,
-      [nowManila]
-    );
-
-    clearNormalPersonnelCache();
+    const endedSession = await stopEmergencySession();
 
     res.json({
       emergencyActive: false,
-      endedSession: result.rows[0] || null,
+      endedSession,
     });
   } catch (err) {
-    console.error("❌ STOP EMERGENCY ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency stop", err);
+  }
+});
+
+app.get("/api/emergency/schedules", async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        id,
+        scheduled_for,
+        scheduled_until,
+        status,
+        created_by,
+        created_at
+      FROM app.emergency_schedules
+      WHERE status IN ('SCHEDULED', 'STARTING', 'STARTED', 'STOPPING')
+      ORDER BY scheduled_for ASC
+      LIMIT 20
+    `);
+
+    res.json({ rows: result.rows });
+  } catch (err) {
+    sendInternalError(res, "Emergency schedule load", err);
+  }
+});
+
+app.post("/api/emergency/schedules", async (req, res) => {
+  try {
+    const {
+      scheduledFor,
+      scheduledUntil,
+      createdBy = "operator",
+    } = req.body || {};
+    const scheduledDate = new Date(scheduledFor);
+    const scheduledUntilDate = new Date(scheduledUntil);
+
+    if (
+      !scheduledFor ||
+      !scheduledUntil ||
+      Number.isNaN(scheduledDate.getTime()) ||
+      Number.isNaN(scheduledUntilDate.getTime())
+    ) {
+      return res.status(400).json({
+        error: "Valid start and finish dates are required",
+      });
+    }
+
+    if (scheduledDate.getTime() <= Date.now() + 5000) {
+      return res.status(400).json({
+        error: "Schedule must be at least a few seconds in the future",
+      });
+    }
+
+    if (scheduledUntilDate.getTime() <= scheduledDate.getTime()) {
+      return res.status(400).json({
+        error: "Finish must be later than start",
+      });
+    }
+
+    const result = await pool.query(
+      `
+      INSERT INTO app.emergency_schedules (
+        scheduled_for,
+        scheduled_until,
+        status,
+        created_by,
+        created_at,
+        updated_at
+      )
+      VALUES ($1::timestamptz, $2::timestamptz, 'SCHEDULED', $3, NOW(), NOW())
+      RETURNING
+        id,
+        scheduled_for,
+        scheduled_until,
+        status,
+        created_by,
+        created_at
+    `,
+      [
+        scheduledDate.toISOString(),
+        scheduledUntilDate.toISOString(),
+        String(createdBy || "operator").slice(0, 100),
+      ],
+    );
+
+    res.status(201).json({ schedule: result.rows[0] });
+  } catch (err) {
+    sendInternalError(res, "Emergency schedule creation", err);
+  }
+});
+
+app.delete("/api/emergency/schedules/:id", async (req, res) => {
+  try {
+    const scheduleId = Number(req.params.id);
+
+    if (!Number.isInteger(scheduleId) || scheduleId <= 0) {
+      return res.status(400).json({ error: "Invalid schedule id" });
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE app.emergency_schedules
+      SET
+        status = 'CANCELLED',
+        result_message = 'Cancelled from dashboard',
+        updated_at = NOW()
+      WHERE id = $1
+        AND status = 'SCHEDULED'
+      RETURNING id, scheduled_for, status
+    `,
+      [scheduleId],
+    );
+
+    if (!result.rows[0]) {
+      return res.status(404).json({
+        error: "Schedule was not found or can no longer be cancelled",
+      });
+    }
+
+    res.json({ success: true, schedule: result.rows[0] });
+  } catch (err) {
+    sendInternalError(res, "Emergency schedule cancellation", err);
   }
 });
 
@@ -1044,22 +1456,18 @@ app.get("/api/emergency-status", async (req, res) => {
     const session = await getActiveSession();
 
     if (!session) {
-      emergencyActiveState = false;
       return res.json({
         emergencyActive: false,
         activeSession: null,
       });
     }
 
-    emergencyActiveState = true;
-
     res.json({
       emergencyActive: true,
       activeSession: session,
     });
   } catch (err) {
-    console.error("❌ EMERGENCY STATUS ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency status load", err);
   }
 });
 
@@ -1085,7 +1493,9 @@ app.get("/api/emergency-accountability", async (req, res) => {
     const { limit, offset } = parsePaging(req);
     const search = (req.query.search || "").trim();
     const dept = (req.query.dept || "").trim();
-    const status = String(req.query.status || "").trim().toUpperCase();
+    const status = String(req.query.status || "")
+      .trim()
+      .toUpperCase();
 
     const result = await pool.query(
       `
@@ -1107,7 +1517,7 @@ app.get("/api/emergency-accountability", async (req, res) => {
       WHERE session_id = $1
       ORDER BY person ASC
       `,
-      [session.id]
+      [session.id],
     );
 
     let rows = result.rows;
@@ -1139,12 +1549,16 @@ app.get("/api/emergency-accountability", async (req, res) => {
     }
 
     rows.sort((a, b) =>
-      String(a?.person || "").localeCompare(String(b?.person || ""))
+      String(a?.person || "").localeCompare(String(b?.person || "")),
     );
 
     const total = rows.length;
-    const safeCount = rows.filter((row) => row.current_status === "SAFE").length;
-    const notSafeCount = rows.filter((row) => row.current_status !== "SAFE").length;
+    const safeCount = rows.filter(
+      (row) => row.current_status === "SAFE",
+    ).length;
+    const notSafeCount = rows.filter(
+      (row) => row.current_status !== "SAFE",
+    ).length;
     const pagedRows = rows.slice(offset, offset + limit);
 
     res.json({
@@ -1157,8 +1571,7 @@ app.get("/api/emergency-accountability", async (req, res) => {
       hasMore: offset + pagedRows.length < total,
     });
   } catch (err) {
-    console.error("❌ EMERGENCY ACCOUNTABILITY ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency accountability load", err);
   }
 });
 
@@ -1191,7 +1604,7 @@ app.post("/api/emergency/mark-safe", async (req, res) => {
         AND person_key = $3
       RETURNING *
     `,
-      [session.id, markedBy || "system", personKey]
+      [session.id, markedBy || "system", personKey],
     );
 
     res.json({
@@ -1199,11 +1612,9 @@ app.post("/api/emergency/mark-safe", async (req, res) => {
       updated: updateResult.rows[0] || null,
     });
   } catch (err) {
-    console.error("❌ MARK SAFE ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Safe status update", err);
   }
 });
-
 
 // --------------------------------------------
 // UPDATE EMERGENCY STATUS
@@ -1258,14 +1669,12 @@ app.post("/api/emergency/update-status", async (req, res) => {
         created_at,
         updated_at
       `,
-      [session.id, status, markedBy || "operator", personKey]
+      [session.id, status, markedBy || "operator", personKey],
     );
 
     if (updateResult.rows.length === 0) {
       return res.status(404).json({
         error: "Person not found in active emergency session",
-        personKey,
-        sessionId: session.id,
       });
     }
 
@@ -1276,8 +1685,7 @@ app.post("/api/emergency/update-status", async (req, res) => {
       updated: updateResult.rows[0],
     });
   } catch (err) {
-    console.error("❌ UPDATE STATUS ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency status update", err);
   }
 });
 
@@ -1316,7 +1724,7 @@ app.get("/api/emergency/history", async (req, res) => {
       ORDER BY started_at DESC
       LIMIT $1 OFFSET $2
     `,
-      [limit, offset]
+      [limit, offset],
     );
 
     const rows = result.rows;
@@ -1330,8 +1738,7 @@ app.get("/api/emergency/history", async (req, res) => {
       hasMore: offset + rows.length < total,
     });
   } catch (err) {
-    console.error("❌ HISTORY ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency history load", err);
   }
 });
 
@@ -1362,13 +1769,12 @@ app.get("/api/emergency/history/:sessionId", async (req, res) => {
       WHERE session_id = $1
       ORDER BY person ASC
     `,
-      [sessionId]
+      [sessionId],
     );
 
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ HISTORY DETAILS ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency history details load", err);
   }
 });
 
@@ -1395,13 +1801,12 @@ app.get("/api/emergency/analytics/:sessionId", async (req, res) => {
       GROUP BY persongroup
       ORDER BY safe_percent ASC, persongroup ASC
     `,
-      [sessionId]
+      [sessionId],
     );
 
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ ANALYTICS ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Emergency analytics load", err);
   }
 });
 
@@ -1416,7 +1821,6 @@ async function syncMusteringScansToActiveSession() {
       success: true,
       updatedCount: 0,
       insertedCount: 0,
-      updatedRows: [],
       message: "No active emergency session",
     };
   }
@@ -1456,14 +1860,13 @@ async function syncMusteringScansToActiveSession() {
       AND LOWER(TRIM("L_Mode")) LIKE '% %'
     ORDER BY "C_Time" DESC
     `,
-    [todayManila]
+    [todayManila],
   );
 
   const dedupedRows = dedupeRowsByCanonicalName(musterResult.rows);
 
   let insertedCount = 0;
   let updatedCount = 0;
-  const changedRows = [];
 
   for (const row of dedupedRows) {
     const result = await pool.query(
@@ -1513,14 +1916,6 @@ async function syncMusteringScansToActiveSession() {
         ),
         updated_at = (NOW() AT TIME ZONE 'Asia/Manila')
       RETURNING
-        id,
-        session_id,
-        person,
-        l_uid,
-        person_key,
-        current_status,
-        marked_safe_at,
-        marked_safe_by,
         xmax = 0 AS inserted
       `,
       [
@@ -1531,40 +1926,85 @@ async function syncMusteringScansToActiveSession() {
         row.PersonGroup || null,
         row.L_Mode || null,
         row.L_TID || null,
-      ]
+      ],
     );
 
-    for (const changed of result.rows) {
-      if (changed.inserted) insertedCount += 1;
-      else updatedCount += 1;
-
-      changedRows.push(changed);
-    }
+    if (result.rows[0]?.inserted) insertedCount += 1;
+    else updatedCount += 1;
   }
-
-  console.log("✅ MUSTERING SYNC UPSERT:", {
-    insertedCount,
-    updatedCount,
-    total: changedRows.length,
-  });
 
   return {
     success: true,
     insertedCount,
     updatedCount,
-    updatedRows: changedRows,
-    sessionId: session.id,
   };
 }
+
+app.post("/api/visit-session", async (req, res) => {
+  try {
+    const {
+      sessionId,
+      firstPath = "/",
+      userAgent: clientUserAgent = "",
+    } = req.body || {};
+
+    const normalizedSessionId = String(sessionId || "").trim();
+
+    if (
+      !normalizedSessionId ||
+      normalizedSessionId.length < 8 ||
+      normalizedSessionId.length > 120
+    ) {
+      return res.status(400).json({ error: "Invalid visit session id" });
+    }
+
+    const userAgent = String(
+      clientUserAgent || req.headers["user-agent"] || "",
+    ).slice(0, 1000);
+
+    const result = await pool.query(
+      `
+      INSERT INTO app."Emergency-logs" (
+        session_id,
+        ip_address,
+        browser,
+        operating_system,
+        device_type,
+        first_path,
+        user_agent
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (session_id) DO NOTHING
+      RETURNING id, opened_at
+    `,
+      [
+        normalizedSessionId,
+        getRequestIp(req),
+        detectBrowser(userAgent),
+        detectOperatingSystem(userAgent),
+        detectDeviceType(userAgent),
+        String(firstPath || "/").slice(0, 500),
+        userAgent,
+      ],
+    );
+
+    res.status(result.rowCount > 0 ? 201 : 200).json({
+      success: true,
+      created: result.rowCount > 0,
+    });
+  } catch (err) {
+    sendInternalError(res, "Visit session recording", err);
+  }
+});
 
 app.post("/api/auth/passcode", (req, res) => {
   const { passcode } = req.body;
 
-  if (!process.env.APP_PASSWORD) {
+  if (!APP_PASSWORD) {
     return res.status(500).json({ error: "APP_PASSWORD is not configured" });
   }
 
-  if (passcode !== process.env.APP_PASSWORD) {
+  if (String(passcode ?? "").trim() !== APP_PASSWORD) {
     return res.status(401).json({ error: "Invalid passcode" });
   }
 
@@ -1572,6 +2012,10 @@ app.post("/api/auth/passcode", (req, res) => {
     success: true,
     token: "passcode-ok",
   });
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok" });
 });
 
 app.post("/api/emergency/sync-mustering", async (req, res) => {
@@ -1605,10 +2049,8 @@ app.post("/api/emergency/sync-mustering", async (req, res) => {
       skipped: false,
     });
   } catch (err) {
-    console.error("❌ MUSTERING SYNC ERROR:", err.message);
-    res.status(500).json({
+    sendInternalError(res, "Mustering synchronization", err, {
       success: false,
-      error: err.message,
     });
   } finally {
     musteringSyncInFlight = false;
@@ -1630,8 +2072,6 @@ app.get("/api/personnel-search", async (req, res) => {
           "L_UID",
           "Person",
           "PersonGroup",
-          "L_Mode",
-          "L_TID",
           "C_Date",
           "C_Time",
           ROW_NUMBER() OVER (
@@ -1648,42 +2088,27 @@ app.get("/api/personnel-search", async (req, res) => {
       SELECT
         "L_UID",
         "Person",
-        "PersonGroup",
-        "L_Mode",
-        "L_TID",
-        "C_Date",
-        "C_Time"
+        "PersonGroup"
       FROM matched
       WHERE rn = 1
       ORDER BY "Person" ASC
       LIMIT 30
       `,
-      [search]
+      [search],
     );
-
-    console.log("✅ PERSONNEL SEARCH:", {
-      search,
-      count: result.rows.length,
-      rows: result.rows.map((r) => ({
-        uid: r.L_UID,
-        name: r.Person,
-        dept: r.PersonGroup,
-        date: r.C_Date,
-        time: r.C_Time,
-        tid: r.L_TID,
-        mode: r.L_Mode,
-      })),
-    });
 
     res.json(result.rows);
   } catch (err) {
-    console.error("❌ PERSONNEL SEARCH ERROR:", err.message);
-    res.status(500).json({ error: err.message });
+    sendInternalError(res, "Personnel search", err);
   }
 });
 // --------------------------------------------
 // SERVE REACT BUILD
 // --------------------------------------------
+app.use("/api", (req, res) => {
+  res.status(404).json({ error: "API route not found" });
+});
+
 app.use(express.static(path.join(__dirname, "dist")));
 
 app.use((req, res, next) => {
@@ -1695,19 +2120,31 @@ app.use((req, res, next) => {
 // --------------------------------------------
 // START SERVER
 // --------------------------------------------
-initDb()
-  .then(() => {
-    const PORT = Number(process.env.PORT) || 5000;
-
-app.listen(PORT, async () => {
-  console.log(`🚀 Backend running on http://localhost:${PORT}`);
-
+async function startServer() {
   try {
     await initDb();
     console.log("✅ DB INIT COMPLETE");
   } catch (err) {
-    console.error("❌ DB INIT ERROR:", err.message);
-    console.error("⚠️ Backend is still running, but DB routes may fail.");
+    logServerError("Database initialization", err);
+    process.exitCode = 1;
+    return;
   }
-});
-  })
+
+  const PORT = Number(process.env.PORT) || 5053;
+
+  app.listen(PORT, () => {
+    console.log(`🚀 Backend running on http://localhost:${PORT}`);
+
+    processDueEmergencySchedules().catch((err) => {
+      logServerError("Initial schedule check", err);
+    });
+
+    setInterval(() => {
+      processDueEmergencySchedules().catch((err) => {
+        logServerError("Schedule check", err);
+      });
+    }, EMERGENCY_SCHEDULE_POLL_MS);
+  });
+}
+
+startServer();

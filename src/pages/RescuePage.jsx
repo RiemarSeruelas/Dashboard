@@ -17,18 +17,39 @@ const ROLE_OPTIONS = [
 
 const DEFAULT_ROLE = "Incident Commander";
 
+const ROLE_TONES = {
+  "Incident Commander": "violet",
+  "Safety Officer": "blue",
+  "Emergency Captain": "amber",
+  "Area Marshal": "cyan",
+  "Fire Brigade Dressing": "red",
+  "Fire Brigade Savoury": "rose",
+  "First Aider": "green",
+  "Search & Rescue": "indigo",
+  Environment: "emerald",
+  Security: "slate",
+};
+
+function getRoleTone(role) {
+  return ROLE_TONES[role] || "slate";
+}
+
 export default function RescuePage() {
   const rescuePersonnel = useDashboardStore((s) => s.rescuePersonnel) ?? [];
   const fetchRescuePersonnel = useDashboardStore((s) => s.fetchRescuePersonnel);
   const addRescuePersonnel = useDashboardStore((s) => s.addRescuePersonnel);
-  const removeRescuePersonnel = useDashboardStore((s) => s.removeRescuePersonnel);
-  const updateRescuePersonnel = useDashboardStore((s) => s.updateRescuePersonnel);
+  const removeRescuePersonnel = useDashboardStore(
+    (s) => s.removeRescuePersonnel,
+  );
+  const updateRescuePersonnel = useDashboardStore(
+    (s) => s.updateRescuePersonnel,
+  );
 
   const emergencyActive = useDashboardStore((s) => s.emergencyActive);
   const triggerEmergency = useDashboardStore((s) => s.triggerEmergency);
   const clearEmergency = useDashboardStore((s) => s.clearEmergency);
   const emergencyActionLoading = useDashboardStore(
-    (s) => s.emergencyActionLoading
+    (s) => s.emergencyActionLoading,
   );
 
   const [showAddModal, setShowAddModal] = useState(false);
@@ -67,7 +88,7 @@ export default function RescuePage() {
         setLoadingSearch(true);
 
         const res = await fetch(
-          `/api/personnel-search?search=${encodeURIComponent(trimmed)}`
+          `/api/personnel-search?search=${encodeURIComponent(trimmed)}`,
         );
 
         const text = await res.text();
@@ -76,24 +97,20 @@ export default function RescuePage() {
         try {
           data = text ? JSON.parse(text) : [];
         } catch {
-          console.error(
-            "❌ PERSONNEL SEARCH NON-JSON RESPONSE:",
-            text.slice(0, 300)
-          );
+          console.error("[dashboard] Personnel search returned invalid data.");
           setDbResults([]);
           return;
         }
 
         if (!res.ok) {
-          console.error("❌ PERSONNEL SEARCH HTTP ERROR:", data);
+          console.error("[dashboard] Personnel search is unavailable.");
           setDbResults([]);
           return;
         }
 
-        console.log("✅ PERSONNEL SEARCH RESULTS:", data);
         setDbResults(Array.isArray(data) ? data : []);
-      } catch (err) {
-        console.error("❌ PERSONNEL SEARCH ERROR:", err);
+      } catch {
+        console.error("[dashboard] Personnel search is unavailable.");
         setDbResults([]);
       } finally {
         setLoadingSearch(false);
@@ -109,9 +126,13 @@ export default function RescuePage() {
 
     return rows.filter((p) => {
       const nameOk =
-        !search || String(p.name || "").toLowerCase().includes(search);
+        !search ||
+        String(p.name || "")
+          .toLowerCase()
+          .includes(search);
 
-      const roleOk = roleFilter === "ALL" || String(p.role || "") === roleFilter;
+      const roleOk =
+        roleFilter === "ALL" || String(p.role || "") === roleFilter;
 
       return nameOk && roleOk;
     });
@@ -197,7 +218,6 @@ export default function RescuePage() {
   return (
     <AppShell
       title="Rescue Team"
-      subtitle="Only selected rescue personnel currently inside the company are shown"
       summaryStats={[
         { value: rescueTeam.length, label: "INSIDE RESPONDERS" },
         {
@@ -222,18 +242,14 @@ export default function RescuePage() {
           {emergencyActionLoading
             ? "Loading..."
             : emergencyActive
-            ? "Stop"
-            : "Start"}
+              ? "Stop"
+              : "Start"}
         </button>
       }
+      workspaceClassName="two-column-workspace rescue-workspace"
     >
       <aside className="panel left-panel">
-        <div className="panel-title">Rescue Setup</div>
-
-        <div className="mini-info-text">
-          Add names from the personnel database. Only selected people currently
-          inside will appear in the rescue list.
-        </div>
+        <div className="panel-title">Add Rescue Personnel</div>
 
         <button
           className="primary-action-btn"
@@ -241,6 +257,38 @@ export default function RescuePage() {
         >
           + Add Rescue Personnel
         </button>
+
+        <div className="rescue-stats-section">
+          <div className="panel-title">Rescue Stats</div>
+
+          <div className="metric-stack">
+            <div className="metric-card">
+              <div className="metric-label">Visible Responders</div>
+              <div className="metric-value safe-text">{rescueTeam.length}</div>
+            </div>
+
+            <div className="mini-info-card">
+              <div className="mini-info-title">Inside Building</div>
+
+              <div className="rescue-name-list">
+                {rescueTeam.length > 0 ? (
+                  rescueTeam.map((person) => (
+                    <div className="rescue-name-row" key={`side-${person.id}`}>
+                      <span
+                        className={`watchlist-dot rescue-role-dot rescue-tone-${getRoleTone(person.role)}`}
+                      />
+                      <span>{person.name}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="mini-info-text">
+                    No rescue personnel inside.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
       </aside>
 
       <section className="panel center-panel">
@@ -271,82 +319,51 @@ export default function RescuePage() {
 
           <div className="rescue-grid">
             {rescueTeam.length > 0 ? (
-              rescueTeam.map((person) => (
-                <div
-                  className="rescue-card"
-                  key={person.id}
-                  onClick={() => handleOpenDetails(person)}
-                >
-                  <div className="rescue-card-row">
-                    <div className="rescue-inside-dot" title="Inside" />
+              rescueTeam.map((person) => {
+                const roleTone = getRoleTone(person.role);
 
-                    <div>
-                      <div className="rescue-name">{person.name}</div>
+                return (
+                  <div
+                    className={`rescue-card rescue-tone-${roleTone}`}
+                    data-category={person.role || "Responder"}
+                    key={person.id}
+                    onClick={() => handleOpenDetails(person)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter" || event.key === " ") {
+                        event.preventDefault();
+                        handleOpenDetails(person);
+                      }
+                    }}
+                    role="button"
+                    tabIndex={0}
+                  >
+                    <div className="rescue-card-row">
+                      <div className="rescue-inside-dot" title="Inside" />
 
-                      <div className="rescue-meta-row">
-                        <span className="rescue-badge">{person.role}</span>
-                        <span className="status-chip done">INSIDE</span>
-                      </div>
+                      <div>
+                        <div className="rescue-name">{person.name}</div>
 
-                      <div className="rescue-contact">
-                        {person.phone || "No phone number"}
-                      </div>
-
-                      {person.lastTime && (
-                        <div className="mini-info-text">
-                          Last scan: {person.lastTime}
+                        <div className="rescue-category">
+                          <span>Category</span>
+                          <strong>{person.role}</strong>
                         </div>
-                      )}
 
-                      {person.lastMode && (
-                        <div className="mini-info-text">
-                          Location: {person.lastMode}
+                        <div className="rescue-contact">
+                          {person.phone || "No phone number"}
                         </div>
-                      )}
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))
+                );
+              })
             ) : (
               <div className="metric-card">
                 <div className="metric-label">No rescue personnel inside</div>
-                <div className="metric-value">
-                  Add names from the left panel. They will appear here only when
-                  their latest scan today has L_TID = 1.
-                </div>
               </div>
             )}
           </div>
         </div>
       </section>
-
-      <aside className="panel right-panel">
-        <div className="panel-title">Rescue Status</div>
-
-        <div className="metric-stack">
-          <div className="metric-card">
-            <div className="metric-label">Visible Responders</div>
-            <div className="metric-value safe-text">{rescueTeam.length}</div>
-          </div>
-
-          <div className="mini-info-card">
-            <div className="mini-info-title">Inside Building</div>
-
-            <div className="rescue-name-list">
-              {rescueTeam.length > 0 ? (
-                rescueTeam.map((person) => (
-                  <div className="rescue-name-row" key={`side-${person.id}`}>
-                    <span className="watchlist-dot normal" />
-                    <span>{person.name}</span>
-                  </div>
-                ))
-              ) : (
-                <div className="mini-info-text">No rescue personnel inside.</div>
-              )}
-            </div>
-          </div>
-        </div>
-      </aside>
 
       {showAddModal && (
         <div className="detail-modal-overlay" onClick={closeAddModal}>
@@ -361,8 +378,8 @@ export default function RescuePage() {
 
             <div className="detail-title">Add Rescue Personnel</div>
             <div className="detail-subtitle">
-              Search from personnel database, assign a rescue role, and add phone
-              number.
+              Search from personnel database, assign a rescue role, and add
+              phone number.
             </div>
 
             <form className="rescue-form" onSubmit={handleAddRescue}>
@@ -500,7 +517,7 @@ export default function RescuePage() {
               {selectedPerson.dept || "Unknown Department"}
             </div>
 
-            <div className="detail-list">
+            <div className="detail-list rescue-detail-list">
               <div>
                 <div className="detail-label">Rescue Role</div>
                 <select
@@ -525,36 +542,13 @@ export default function RescuePage() {
                   placeholder="Phone number..."
                 />
               </div>
-
-              <div>
-                <div className="detail-label">Status</div>
-                <div className="status-chip done">INSIDE</div>
-              </div>
-
-              {selectedPerson.lUid && (
-                <div>
-                  <div className="detail-label">L_UID</div>
-                  <div className="mini-info-text">{selectedPerson.lUid}</div>
-                </div>
-              )}
-
-              {selectedPerson.lastMode && (
-                <div>
-                  <div className="detail-label">Last Location</div>
-                  <div className="mini-info-text">{selectedPerson.lastMode}</div>
-                </div>
-              )}
-
-              {selectedPerson.lastTime && (
-                <div>
-                  <div className="detail-label">Last Scan Time</div>
-                  <div className="mini-info-text">{selectedPerson.lastTime}</div>
-                </div>
-              )}
             </div>
 
             <div className="rescue-actions" style={{ marginTop: 16 }}>
-              <button className="primary-action-btn" onClick={handleUpdatePerson}>
+              <button
+                className="primary-action-btn"
+                onClick={handleUpdatePerson}
+              >
                 Save
               </button>
 

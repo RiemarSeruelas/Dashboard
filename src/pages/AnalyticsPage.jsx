@@ -38,11 +38,7 @@ function normalizePerson(person, index = 0) {
       person?.l_uid ??
       person?.L_UID ??
       `person-${index}`,
-    name:
-      person?.name ??
-      person?.person ??
-      person?.Person ??
-      "Unknown",
+    name: person?.name ?? person?.person ?? person?.Person ?? "Unknown",
     dept:
       person?.dept ??
       person?.persongroup ??
@@ -55,10 +51,7 @@ function normalizePerson(person, index = 0) {
       person?.mode ??
       person?.L_Mode ??
       "Unknown Role",
-    status:
-      person?.status ??
-      person?.current_status ??
-      "NOT SAFE",
+    status: person?.status ?? person?.current_status ?? "NOT SAFE",
   };
 }
 
@@ -75,7 +68,7 @@ export default function AnalyticsPage() {
   const selectedAnalyticsEventId =
     useDashboardStore((s) => s.selectedAnalyticsEventId) ?? "LIVE";
   const setSelectedAnalyticsEventId = useDashboardStore(
-    (s) => s.setSelectedAnalyticsEventId
+    (s) => s.setSelectedAnalyticsEventId,
   );
   const fetchPersonnel = useDashboardStore((s) => s.fetchPersonnel);
   const fetchHistory = useDashboardStore((s) => s.fetchHistory);
@@ -86,7 +79,9 @@ export default function AnalyticsPage() {
 
   const didInitRef = useRef(false);
   const lastLoadedSessionRef = useRef(null);
-  const emergencyActionLoading = useDashboardStore((s) => s.emergencyActionLoading);
+  const emergencyActionLoading = useDashboardStore(
+    (s) => s.emergencyActionLoading,
+  );
 
   useEffect(() => {
     if (didInitRef.current) return;
@@ -104,7 +99,8 @@ export default function AnalyticsPage() {
           setHistoricalPeople([]);
           lastLoadedSessionRef.current = "LIVE";
 
-          const noPersonnelLoaded = !Array.isArray(personnel) || personnel.length === 0;
+          const noPersonnelLoaded =
+            !Array.isArray(personnel) || personnel.length === 0;
 
           if (noPersonnelLoaded) {
             await fetchPersonnel?.();
@@ -121,8 +117,8 @@ export default function AnalyticsPage() {
 
         const rows = await fetchSessionDetails?.(selectedAnalyticsEventId);
         setHistoricalPeople(Array.isArray(rows) ? rows : []);
-      } catch (err) {
-        console.error("❌ ANALYTICS LOAD ERROR:", err);
+      } catch {
+        console.error("[dashboard] Analytics could not be loaded.");
         setHistoricalPeople([]);
       } finally {
         setLoadingHistoricalPeople(false);
@@ -130,7 +126,12 @@ export default function AnalyticsPage() {
     }
 
     loadAnalyticsSource();
-  }, [selectedAnalyticsEventId, fetchPersonnel, fetchSessionDetails, personnel]);
+  }, [
+    selectedAnalyticsEventId,
+    fetchPersonnel,
+    fetchSessionDetails,
+    personnel,
+  ]);
 
   const civiliansLive = useMemo(() => {
     return Array.isArray(personnel)
@@ -145,7 +146,9 @@ export default function AnalyticsPage() {
 
     return (
       (Array.isArray(history)
-        ? history.find((h) => String(h?.id) === String(selectedAnalyticsEventId))
+        ? history.find(
+            (h) => String(h?.id) === String(selectedAnalyticsEventId),
+          )
         : null) || null
     );
   }, [history, selectedAnalyticsEventId]);
@@ -195,7 +198,7 @@ export default function AnalyticsPage() {
 
     return grouped.map((dept) => {
       const people = sourcePeople.filter(
-        (p) => (p.dept ?? "Unknown Department") === dept
+        (p) => (p.dept ?? "Unknown Department") === dept,
       );
       const safe = people.filter((p) => p.status === "SAFE").length;
       const total = people.length;
@@ -210,8 +213,8 @@ export default function AnalyticsPage() {
         selectedEvent?.duration ?? "Unknown"
       })`
     : emergencyActive
-    ? "LIVE ACTIVE EMERGENCY"
-    : "NO ACTIVE EMERGENCY";
+      ? "LIVE ACTIVE EMERGENCY"
+      : "NO ACTIVE EMERGENCY";
 
   const animatedSafeCount = useAnimatedNumber(safeCount, 500);
   const animatedNotSafeCount = useAnimatedNumber(notSafeCount, 500);
@@ -227,7 +230,6 @@ export default function AnalyticsPage() {
   return (
     <AppShell
       title="Analytics Overview"
-      subtitle="Emergency readiness, personnel safety distribution, and department hotspots"
       summaryStats={[
         { value: trackedCount, label: "TRACKED" },
         { value: safeCount, label: "SAFE", variant: "green" },
@@ -235,30 +237,31 @@ export default function AnalyticsPage() {
         { value: `${safePercent}%`, label: "READINESS", variant: "amber" },
       ]}
       actionSlot={
-  <button
-    className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
-    disabled={emergencyActionLoading}
-    style={{
-      opacity: emergencyActionLoading ? 0.65 : 1,
-      cursor: emergencyActionLoading ? "wait" : "pointer",
-    }}
-    onClick={() => {
-      if (emergencyActionLoading) return;
+        <button
+          className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
+          disabled={emergencyActionLoading}
+          style={{
+            opacity: emergencyActionLoading ? 0.65 : 1,
+            cursor: emergencyActionLoading ? "wait" : "pointer",
+          }}
+          onClick={() => {
+            if (emergencyActionLoading) return;
 
-      if (emergencyActive) {
-        clearEmergency?.();
-      } else {
-        triggerEmergency?.();
+            if (emergencyActive) {
+              clearEmergency?.();
+            } else {
+              triggerEmergency?.();
+            }
+          }}
+        >
+          {emergencyActionLoading
+            ? "Loading..."
+            : emergencyActive
+              ? "Stop"
+              : "Start"}
+        </button>
       }
-    }}
-  >
-    {emergencyActionLoading
-      ? "Loading..."
-      : emergencyActive
-      ? "Stop"
-      : "Start"}
-  </button>
-}
+      workspaceClassName="two-column-workspace analytics-workspace"
     >
       <aside className="panel left-panel">
         <div className="panel-section">
@@ -284,6 +287,46 @@ export default function AnalyticsPage() {
                 </option>
               ))}
           </select>
+        </div>
+
+        <div className="panel-section analytics-department-status">
+          <div className="panel-title">Department Safety Status</div>
+
+          <div className="hotspot-list">
+            {deptStats.map((item) => (
+              <div key={item.dept} className="hotspot-item">
+                <div className="hotspot-head">
+                  <span>{item.dept}</span>
+                  <span>{item.percent}%</span>
+                </div>
+
+                <div className="hotspot-track">
+                  <div
+                    className={`hotspot-fill animated-bar ${
+                      item.percent === 100
+                        ? "good"
+                        : item.percent >= 50
+                          ? "warn"
+                          : "bad"
+                    }`}
+                    style={{ width: `${item.percent}%` }}
+                  />
+                </div>
+              </div>
+            ))}
+
+            {deptStats.length === 0 && (
+              <div className="mini-info-card">
+                <div className="mini-info-text">
+                  {selectedAnalyticsEventId === "LIVE" && !emergencyActive
+                    ? "No active emergency analytics."
+                    : loadingHistoricalPeople
+                      ? "Loading analytics data..."
+                      : "No analytics data available yet."}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="mini-info-card">
@@ -317,9 +360,7 @@ export default function AnalyticsPage() {
                     }}
                   />
                 </div>
-                <div className="bar-value">
-                  {Math.round(animatedSafeCount)}
-                </div>
+                <div className="bar-value">{Math.round(animatedSafeCount)}</div>
               </div>
 
               <div className="bar-wrap">
@@ -390,46 +431,6 @@ export default function AnalyticsPage() {
           </div>
         </div>
       </section>
-
-      <aside className="panel right-panel">
-        <div className="panel-title">Department Safety Status</div>
-
-        <div className="hotspot-list">
-          {deptStats.map((item) => (
-            <div key={item.dept} className="hotspot-item">
-              <div className="hotspot-head">
-                <span>{item.dept}</span>
-                <span>{item.percent}%</span>
-              </div>
-
-              <div className="hotspot-track">
-                <div
-                  className={`hotspot-fill animated-bar ${
-                    item.percent === 100
-                      ? "good"
-                      : item.percent >= 50
-                      ? "warn"
-                      : "bad"
-                  }`}
-                  style={{ width: `${item.percent}%` }}
-                />
-              </div>
-            </div>
-          ))}
-
-          {deptStats.length === 0 && (
-            <div className="mini-info-card">
-              <div className="mini-info-text">
-                {selectedAnalyticsEventId === "LIVE" && !emergencyActive
-                  ? "No active emergency analytics."
-                  : loadingHistoricalPeople
-                  ? "Loading analytics data..."
-                  : "No analytics data available yet."}
-              </div>
-            </div>
-          )}
-        </div>
-      </aside>
     </AppShell>
   );
 }

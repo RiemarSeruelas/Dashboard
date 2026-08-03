@@ -1,9 +1,18 @@
 services:
-  emergency-dashboard:
-    build: .
-    container_name: emergency-dashboard
-    ports:
-      - "5053:5053"
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: emergency-trial
+
     env_file:
       - .env
+
+    environment:
+      PORT: "5053"
+
+    ports:
+      - "${APP_PORT:-5053}:5053"
+
     restart: unless-stopped

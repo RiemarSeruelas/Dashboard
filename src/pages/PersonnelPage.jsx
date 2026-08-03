@@ -2,8 +2,6 @@ import { useCallback, useMemo, useEffect, useRef, useState } from "react";
 import AppShell from "../components/Appshell";
 import { useDashboardStore } from "../store/useDashboardStore";
 
-
-
 function tokenizeName(name) {
   return (name || "")
     .toLowerCase()
@@ -88,7 +86,8 @@ function normalizeEmergencyPerson(row, index = 0) {
       buildCanonicalName(row?.person ?? row?.Person ?? row?.name ?? "") ??
       `risk-${index}`,
     name: row?.person ?? row?.Person ?? row?.name ?? "Unknown",
-    dept: row?.persongroup ?? row?.PersonGroup ?? row?.dept ?? "Unknown Department",
+    dept:
+      row?.persongroup ?? row?.PersonGroup ?? row?.dept ?? "Unknown Department",
     role: row?.initial_mode ?? row?.role ?? "Emergency Accountability",
     status: row?.current_status ?? row?.status ?? "NOT SAFE",
     isRescue: false,
@@ -111,11 +110,14 @@ export default function PersonnelPage() {
   const personnelLoading = useDashboardStore((s) => s.personnelLoading);
   const personnelLoadingMore = useDashboardStore((s) => s.personnelLoadingMore);
   const setPersonnelSearch = useDashboardStore((s) => s.setPersonnelSearch);
-  const setPersonnelDepartment = useDashboardStore((s) => s.setPersonnelDepartment);
+  const setPersonnelDepartment = useDashboardStore(
+    (s) => s.setPersonnelDepartment,
+  );
   const fetchPersonnel = useDashboardStore((s) => s.fetchPersonnel);
-  const emergencyActionLoading = useDashboardStore((s) => s.emergencyActionLoading);
+  const emergencyActionLoading = useDashboardStore(
+    (s) => s.emergencyActionLoading,
+  );
   const didSearchEffectInitRef = useRef(false);
-  
 
   const didInitRef = useRef(false);
   const prevEmergencyRef = useRef(emergencyActive);
@@ -130,7 +132,6 @@ export default function PersonnelPage() {
   const [riskLoading, setRiskLoading] = useState(false);
   const [riskLoadingMore, setRiskLoadingMore] = useState(false);
   const [musteringSyncing, setMusteringSyncing] = useState(false);
-
 
   const rememberScrollPositions = useCallback(() => {
     const mainEl = scrollRef.current;
@@ -172,41 +173,40 @@ export default function PersonnelPage() {
     });
   }, []);
 
- useEffect(() => {
-  if (!didSearchEffectInitRef.current) {
-    didSearchEffectInitRef.current = true;
-    return;
-  }
-
-  const trimmed = (searchInput || "").trim();
-
-  const timer = setTimeout(() => {
-    if (trimmed.length > 0 && trimmed.length < 3) {
+  useEffect(() => {
+    if (!didSearchEffectInitRef.current) {
+      didSearchEffectInitRef.current = true;
       return;
     }
 
-    setSearchTerm?.(trimmed);
+    const trimmed = (searchInput || "").trim();
 
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = 0;
-    }
+    const timer = setTimeout(() => {
+      if (trimmed.length > 0 && trimmed.length < 3) {
+        return;
+      }
 
-    if (emergencyActive) {
-      setPersonnelSearch?.(trimmed);
-    } else {
-      fetchPersonnel?.();
-    }
-  }, 1000);
+      setSearchTerm?.(trimmed);
 
-  return () => clearTimeout(timer);
-}, [
-  searchInput,
-  emergencyActive,
-  setSearchTerm,
-  setPersonnelSearch,
-  fetchPersonnel,
-]);
+      if (scrollRef.current) {
+        scrollRef.current.scrollTop = 0;
+      }
 
+      if (emergencyActive) {
+        setPersonnelSearch?.(trimmed);
+      } else {
+        fetchPersonnel?.();
+      }
+    }, 1000);
+
+    return () => clearTimeout(timer);
+  }, [
+    searchInput,
+    emergencyActive,
+    setSearchTerm,
+    setPersonnelSearch,
+    fetchPersonnel,
+  ]);
 
   const loadPotentialRisks = useCallback(
     async ({ reset = false } = {}) => {
@@ -237,9 +237,12 @@ export default function PersonnelPage() {
           offset: String(nextOffset),
         });
 
-        const response = await fetch(`/api/emergency-accountability?${params.toString()}`, {
-          cache: "no-store",
-        });
+        const response = await fetch(
+          `/api/emergency-accountability?${params.toString()}`,
+          {
+            cache: "no-store",
+          },
+        );
 
         if (!response.ok) {
           throw new Error(`Failed to load potential risks: ${response.status}`);
@@ -256,8 +259,8 @@ export default function PersonnelPage() {
         });
         setRiskOffset(nextOffset + normalized.length);
         setRiskHasMore(Boolean(data.hasMore));
-      } catch (error) {
-        console.error("❌ POTENTIAL RISKS LOAD ERROR:", error);
+      } catch {
+        console.error("[dashboard] Potential risks could not be loaded.");
       } finally {
         if (riskRequestIdRef.current === requestId) {
           setRiskLoading(false);
@@ -265,9 +268,8 @@ export default function PersonnelPage() {
         }
       }
     },
-    [emergencyActive, riskLoading, riskLoadingMore, riskOffset]
+    [emergencyActive, riskLoading, riskLoadingMore, riskOffset],
   );
-
 
   const syncMusteringWithoutJump = useCallback(async () => {
     if (!emergencyActive || musteringSyncing) return;
@@ -290,8 +292,8 @@ export default function PersonnelPage() {
       await response.json().catch(() => null);
       await loadEmergencyStatus?.({ forceRefreshPersonnel: true });
       await loadPotentialRisks({ reset: true });
-    } catch (error) {
-      console.error("❌ SYNC MUSTERING ERROR:", error);
+    } catch {
+      console.error("[dashboard] Mustering sync failed.");
       await loadEmergencyStatus?.({ forceRefreshPersonnel: true });
       await loadPotentialRisks({ reset: true });
     } finally {
@@ -323,8 +325,12 @@ export default function PersonnelPage() {
       setPersonnelSearch?.("");
       setPersonnelDepartment?.("ALL");
     }
-  }, [emergencyActive, setSearchTerm, setPersonnelSearch, setPersonnelDepartment]);
-
+  }, [
+    emergencyActive,
+    setSearchTerm,
+    setPersonnelSearch,
+    setPersonnelDepartment,
+  ]);
 
   useEffect(() => {
     if (!emergencyActive) {
@@ -433,14 +439,6 @@ export default function PersonnelPage() {
     return dedupePeopleByName(source);
   }, [personnel]);
 
-  const watchlistPeople = useMemo(() => {
-    if (emergencyActive) {
-      return dedupePeopleByName(riskPeople).filter((p) => p.status !== "SAFE");
-    }
-
-    return dedupePeopleByName(civilians);
-  }, [civilians, emergencyActive, riskPeople]);
-
   const filtered = useMemo(() => {
     if (emergencyActive) {
       return civilians;
@@ -454,11 +452,31 @@ export default function PersonnelPage() {
         selectedDepartment === "ALL" ||
         p.dept === selectedDepartment;
 
-      const textOk =
-        !search || isLikelySamePersonName(p.name, search);
+      const textOk = !search || isLikelySamePersonName(p.name, search);
       return deptOk && textOk;
     });
   }, [civilians, selectedDepartment, searchTerm, emergencyActive]);
+
+  const watchlistPeople = useMemo(() => {
+    if (!emergencyActive) {
+      return filtered;
+    }
+
+    const search = (searchTerm || "").trim();
+
+    return dedupePeopleByName(riskPeople)
+      .filter((person) => person.status !== "SAFE")
+      .filter((person) => {
+        const departmentMatches =
+          !selectedDepartment ||
+          selectedDepartment === "ALL" ||
+          person.dept === selectedDepartment;
+        const searchMatches =
+          !search || isLikelySamePersonName(person.name, search);
+
+        return departmentMatches && searchMatches;
+      });
+  }, [emergencyActive, filtered, riskPeople, searchTerm, selectedDepartment]);
 
   const personnelTotal = useDashboardStore((s) => s.personnelTotal) ?? 0;
   const safeCount = useDashboardStore((s) => s.safeTotal) ?? 0;
@@ -472,11 +490,6 @@ export default function PersonnelPage() {
   return (
     <AppShell
       title="Personnel Command Center"
-      subtitle={
-        emergencyActive
-          ? "Emergency active: persistent accountability from emergency session"
-          : "Normal mode: live personnel from turnstile entrance"
-      }
       summaryStats={[
         { value: personnelTotal, label: "TRACKED" },
         {
@@ -497,79 +510,135 @@ export default function PersonnelPage() {
       ]}
       actionSlot={
         <button
-  className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
-  disabled={emergencyActionLoading}
-  style={{
-    opacity: emergencyActionLoading ? 0.6 : 1,
-    cursor: emergencyActionLoading ? "wait" : "pointer",
-  }}
-  onClick={() => {
-    if (emergencyActionLoading) return;
+          className={`top-nav-btn ${emergencyActive ? "active" : ""}`}
+          disabled={emergencyActionLoading}
+          style={{
+            opacity: emergencyActionLoading ? 0.6 : 1,
+            cursor: emergencyActionLoading ? "wait" : "pointer",
+          }}
+          onClick={() => {
+            if (emergencyActionLoading) return;
 
-    if (emergencyActive) {
-      clearEmergency?.();
-    } else {
-      triggerEmergency?.();
-    }
-  }}
->
-  {emergencyActionLoading ? "Loading..." : emergencyActive ? "Stop" : "Start"}
-</button>
+            if (emergencyActive) {
+              clearEmergency?.();
+            } else {
+              triggerEmergency?.();
+            }
+          }}
+        >
+          {emergencyActionLoading
+            ? "Loading..."
+            : emergencyActive
+              ? "Stop"
+              : "Start"}
+        </button>
       }
+      workspaceClassName="personnel-workspace"
     >
-      <aside className="panel left-panel">
-  <div className="panel-title">Filters</div>
+      <aside className="panel left-panel personnel-roster-panel">
+        <div className="personnel-sidebar-heading">
+          <div className="panel-title">
+            {emergencyActive ? "Potential Risks" : "Inside Plant"}
+          </div>
+        </div>
 
-  <input
-    className="styled-input"
-    value={searchInput}
-    onChange={(e) => setSearchInputLocal(e.target.value)}
-    placeholder="Search personnel..."
-  />
+        <div className="personnel-filter-stack">
+          <input
+            className="styled-input personnel-filter-input"
+            value={searchInput}
+            onChange={(e) => setSearchInputLocal(e.target.value)}
+            placeholder="Search personnel"
+            aria-label="Search personnel"
+          />
 
-  <select
-    className="styled-input"
-    value={selectedDepartment}
-    onChange={(e) => {
-      const value = e.target.value;
-      setDepartmentFilter?.(value);
+          <select
+            className="styled-input personnel-filter-input"
+            value={selectedDepartment}
+            aria-label="Filter department"
+            onChange={(e) => {
+              const value = e.target.value;
+              setDepartmentFilter?.(value);
 
-      if (emergencyActive) {
-        setPersonnelDepartment?.(value);
-      } else {
-        fetchPersonnel?.();
-      }
+              if (emergencyActive) {
+                setPersonnelDepartment?.(value);
+              } else {
+                fetchPersonnel?.();
+              }
 
-      if (scrollRef.current) {
-        scrollRef.current.scrollTop = 0;
-      }
-    }}
-  >
-    {departments.map((dept) => (
-      <option key={dept} value={dept}>
-        {dept === "ALL" ? "All Departments" : dept}
-      </option>
-    ))}
-  </select>
+              if (scrollRef.current) {
+                scrollRef.current.scrollTop = 0;
+              }
+            }}
+          >
+            {departments.map((dept) => (
+              <option key={dept} value={dept}>
+                {dept === "ALL" ? "All Departments" : dept}
+              </option>
+            ))}
+          </select>
+        </div>
 
-  {emergencyActive && (
-    <button
-      className="primary-action-btn"
-      disabled={personnelLoading || musteringSyncing}
-      onClick={syncMusteringWithoutJump}
-    >
-      {personnelLoading || musteringSyncing ? "Syncing..." : "Sync Mustering"}
-    </button>
-  )}
-</aside>
+        {emergencyActive && (
+          <button
+            className="primary-action-btn personnel-sync-btn"
+            disabled={personnelLoading || musteringSyncing}
+            onClick={syncMusteringWithoutJump}
+          >
+            {personnelLoading || musteringSyncing
+              ? "Syncing..."
+              : "Sync Mustering"}
+          </button>
+        )}
 
-      <section className="panel center-panel">
+        <div
+          className="watchlist-panel personnel-sidebar-list"
+          ref={riskScrollRef}
+          onWheel={(event) => event.stopPropagation()}
+          onTouchMove={(event) => event.stopPropagation()}
+        >
+          {watchlistPeople.length > 0 ? (
+            <>
+              {watchlistPeople.map((person) => (
+                <div
+                  className="watchlist-row"
+                  key={`${person.personKey}-${person.id}`}
+                >
+                  <span
+                    className={`watchlist-dot ${
+                      emergencyActive ? "danger" : "normal"
+                    }`}
+                  />
+                  <div className="watchlist-name-only">{person.name}</div>
+                </div>
+              ))}
+
+              {emergencyActive && riskLoadingMore && (
+                <div className="watchlist-empty">Loading more risks...</div>
+              )}
+
+              {!emergencyActive && personnelLoadingMore && (
+                <div className="watchlist-empty">Loading more personnel...</div>
+              )}
+            </>
+          ) : (
+            <div className="watchlist-empty">
+              {emergencyActive
+                ? riskLoading
+                  ? "Loading potential risks..."
+                  : "All Safe"
+                : "No personnel found"}
+            </div>
+          )}
+        </div>
+      </aside>
+
+      <section className="panel center-panel personnel-main-panel">
         <div className="table-card">
           <div className="table-title">
             {emergencyActive ? "Emergency Accountability" : "Current Personnel"}
           </div>
 
-        <div className="personnel-scroll-area" ref={scrollRef}>
+          <div className="personnel-scroll-area" ref={scrollRef}>
             {filtered.length > 0 ? (
               <>
                 {filtered.map((person) => (
@@ -584,24 +653,21 @@ export default function PersonnelPage() {
                       try {
                         await togglePersonStatus?.(person.id);
 
-                        // If they were NOT SAFE, remove immediately from Potential Risks.
-                        // If they were SAFE and are being marked NOT SAFE again, reload
-                        // from the backend so they reappear in Potential Risks.
                         if (!wasSafe) {
                           setRiskPeople((prev) =>
                             prev.filter(
                               (risk) =>
                                 risk.personKey !== person.personKey &&
-                                String(risk.id) !== String(person.id)
-                            )
+                                String(risk.id) !== String(person.id),
+                            ),
                           );
                         }
 
                         window.setTimeout(() => {
                           loadPotentialRisks({ reset: true });
                         }, 250);
-                      } catch (error) {
-                        console.error("❌ STATUS TOGGLE ERROR:", error);
+                      } catch {
+                        console.error("[dashboard] Status update failed.");
                         loadPotentialRisks({ reset: true });
                       }
                     }}
@@ -641,16 +707,20 @@ export default function PersonnelPage() {
                 ))}
 
                 {personnelLoadingMore && (
-                  <div className="metric-card">
+                  <div className="metric-card personnel-grid-message">
                     <div className="metric-label">Loading</div>
-                    <div className="metric-value">Loading more personnel...</div>
+                    <div className="metric-value">
+                      Loading more personnel...
+                    </div>
                   </div>
                 )}
               </>
             ) : (
-              <div className="metric-card">
+              <div className="metric-card personnel-grid-message">
                 <div className="metric-label">
-                  {personnelLoading ? "Loading personnel..." : "No personnel found"}
+                  {personnelLoading
+                    ? "Loading personnel..."
+                    : "No personnel found"}
                 </div>
                 <div className="metric-value">
                   {emergencyActive
@@ -662,65 +732,6 @@ export default function PersonnelPage() {
           </div>
         </div>
       </section>
-
-      <aside
-        className="panel right-panel"
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          minHeight: 0,
-          overflow: "hidden",
-        }}
-      >
-        <div className="panel-title">
-          {emergencyActive ? "Potential Risks" : "Inside Plant"}
-        </div>
-
-        <div
-          className="watchlist-panel"
-          ref={riskScrollRef}
-          onWheel={(event) => event.stopPropagation()}
-          onTouchMove={(event) => event.stopPropagation()}
-          style={{
-            flex: 1,
-            minHeight: 0,
-            maxHeight: "calc(100vh - 220px)",
-            overflowY: "auto",
-            overscrollBehavior: "contain",
-            WebkitOverflowScrolling: "touch",
-            scrollBehavior: "auto",
-          }}
-        >
-          {watchlistPeople.length > 0 ? (
-            <>
-              {watchlistPeople.map((p) => (
-                <div className="watchlist-row" key={`${p.personKey}-${p.id}`}>
-                  <span
-                    className={`watchlist-dot ${emergencyActive ? "danger" : "normal"}`}
-                  />
-                  <div className="watchlist-name-only">{p.name}</div>
-                </div>
-              ))}
-
-              {emergencyActive && riskLoadingMore && (
-                <div className="watchlist-empty">Loading more risks...</div>
-              )}
-
-              {!emergencyActive && personnelLoadingMore && (
-                <div className="watchlist-empty">Loading more personnel...</div>
-              )}
-            </>
-          ) : (
-            <div className="watchlist-empty">
-              {emergencyActive
-                ? riskLoading
-                  ? "Loading potential risks..."
-                  : "All Safe"
-                : "No personnel found"}
-            </div>
-          )}
-        </div>
-      </aside>
     </AppShell>
   );
 }
