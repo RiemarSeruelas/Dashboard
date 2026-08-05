@@ -127,7 +127,10 @@ async function parseJsonResponse(res) {
   }
 
   if (!res.ok) {
-    throw new Error(data?.error || `HTTP ${res.status}`);
+    const error = new Error(data?.error || `HTTP ${res.status}`);
+    error.code = data?.code || "";
+    error.data = data;
+    throw error;
   }
 
   return data;
@@ -788,14 +791,31 @@ export const useDashboardStore = create((set, get) => ({
         body: JSON.stringify(personData),
       });
 
-      await parseJsonResponse(res);
+      const data = await parseJsonResponse(res);
 
       await get().fetchRescuePersonnel({
         search: get().rescueSearch,
         dept: get().rescueDepartment,
       });
-    } catch {
+
+      return {
+        success: true,
+        ...data,
+      };
+    } catch (error) {
       reportDashboardError("Rescue personnel creation");
+
+      return {
+        success: false,
+        code: error?.code || error?.data?.code || "",
+        alreadyMember:
+          error?.data?.alreadyMember === true ||
+          error?.code === "RESCUE_MEMBER_EXISTS",
+        message:
+          error?.data?.message ||
+          error?.message ||
+          "Unable to add this user to the Rescue team.",
+      };
     }
   },
 

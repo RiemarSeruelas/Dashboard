@@ -63,6 +63,8 @@ export default function RescuePage() {
 
   const [dbResults, setDbResults] = useState([]);
   const [loadingSearch, setLoadingSearch] = useState(false);
+  const [addingRescue, setAddingRescue] = useState(false);
+  const [addFeedback, setAddFeedback] = useState("");
 
   const [roleFilter, setRoleFilter] = useState("ALL");
   const [listSearch, setListSearch] = useState("");
@@ -147,6 +149,8 @@ export default function RescuePage() {
     setSelectedLUid("");
     setDbResults([]);
     setLoadingSearch(false);
+    setAddingRescue(false);
+    setAddFeedback("");
   };
 
   const closeAddModal = () => {
@@ -164,14 +168,18 @@ export default function RescuePage() {
     setSelectedLUid(lUid);
     setSearchInput(name);
     setDbResults([]);
+    setAddFeedback("");
   };
 
   const handleAddRescue = async (e) => {
     e.preventDefault();
 
-    if (!selectedName.trim()) return;
+    if (!selectedName.trim() || !selectedLUid.trim() || addingRescue) return;
 
-    await addRescuePersonnel?.({
+    setAddingRescue(true);
+    setAddFeedback("");
+
+    const result = await addRescuePersonnel?.({
       lUid: selectedLUid,
       name: selectedName.trim(),
       dept: selectedDept || "EMERGENCY",
@@ -179,8 +187,16 @@ export default function RescuePage() {
       phone: phoneInput.trim(),
     });
 
+    setAddingRescue(false);
+
+    if (!result?.success) {
+      setAddFeedback(
+        result?.message || "Unable to add this user to the Rescue team.",
+      );
+      return;
+    }
+
     closeAddModal();
-    await fetchRescuePersonnel?.();
   };
 
   const handleOpenDetails = (person) => {
@@ -395,6 +411,7 @@ export default function RescuePage() {
                       setSelectedName("");
                       setSelectedDept("");
                       setSelectedLUid("");
+                      setAddFeedback("");
 
                       if (value.trim().length < 3) {
                         setDbResults([]);
@@ -414,6 +431,7 @@ export default function RescuePage() {
                         setSelectedDept("");
                         setSelectedLUid("");
                         setDbResults([]);
+                        setAddFeedback("");
                       }}
                     >
                       ×
@@ -485,16 +503,45 @@ export default function RescuePage() {
                 </div>
               )}
 
+              {addFeedback && (
+                <div
+                  className="mini-info-card"
+                  role="alert"
+                  style={{
+                    borderColor: "#ef4444",
+                    color: "#b91c1c",
+                  }}
+                >
+                  <div className="mini-info-title">{addFeedback}</div>
+                </div>
+              )}
+
               <button
                 type="submit"
                 className="primary-action-btn"
-                disabled={!selectedName.trim()}
+                disabled={
+                  !selectedName.trim() ||
+                  !selectedLUid.trim() ||
+                  addingRescue
+                }
                 style={{
-                  opacity: selectedName.trim() ? 1 : 0.55,
-                  cursor: selectedName.trim() ? "pointer" : "not-allowed",
+                  opacity:
+                    selectedName.trim() &&
+                    selectedLUid.trim() &&
+                    !addingRescue
+                      ? 1
+                      : 0.55,
+                  cursor:
+                    selectedName.trim() &&
+                    selectedLUid.trim() &&
+                    !addingRescue
+                      ? "pointer"
+                      : addingRescue
+                        ? "wait"
+                        : "not-allowed",
                 }}
               >
-                Add to Rescue List
+                {addingRescue ? "Adding..." : "Add to Rescue List"}
               </button>
             </form>
           </div>

@@ -139,6 +139,26 @@ async function initDb() {
   ON app.rescue_team (l_uid);
 `);
 
+  // Create the database-level duplicate protection only after legacy
+  // duplicates have been cleaned up. This never deletes data on startup.
+  await pool.query(`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM app.rescue_team
+        WHERE NULLIF(TRIM(l_uid), '') IS NOT NULL
+        GROUP BY TRIM(l_uid)
+        HAVING COUNT(*) > 1
+      ) THEN
+        CREATE UNIQUE INDEX IF NOT EXISTS uq_rescue_team_l_uid_normalized
+        ON app.rescue_team ((TRIM(l_uid)))
+        WHERE NULLIF(TRIM(l_uid), '') IS NOT NULL;
+      END IF;
+    END
+    $$;
+  `);
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS app.emergency_sessions (
       id BIGSERIAL PRIMARY KEY,
@@ -563,7 +583,26 @@ app.get("/api/rescue-team", async (req, res) => {
 
     const result = await pool.query(
       `
-      WITH rescue AS (
+      WITH ranked_rescue AS (
+        SELECT
+          id,
+          l_uid,
+          name,
+          role,
+          dept,
+          phone,
+          ROW_NUMBER() OVER (
+            PARTITION BY COALESCE(
+              NULLIF(TRIM(l_uid), ''),
+              'NAME:' || LOWER(TRIM(name))
+            )
+            ORDER BY updated_at DESC, id DESC
+          ) AS rescue_rn
+        FROM app.rescue_team
+        WHERE is_active = TRUE
+      ),
+
+      rescue AS (
         SELECT
           id,
           l_uid,
@@ -571,8 +610,8 @@ app.get("/api/rescue-team", async (req, res) => {
           role,
           dept,
           phone
-        FROM app.rescue_team
-        WHERE is_active = TRUE
+        FROM ranked_rescue
+        WHERE rescue_rn = 1
       ),
 
       today_scans_only AS (
@@ -591,6 +630,7 @@ app.get("/api/rescue-team", async (req, res) => {
       matched_today_scans AS (
         SELECT
           rt.id,
+          rt.l_uid,
           rt.name,
           rt.role,
           rt.dept,
@@ -598,12 +638,11 @@ app.get("/api/rescue-team", async (req, res) => {
           h."L_Mode" AS last_mode,
           h."L_TID" AS last_tid,
           h."C_Date" AS last_c_date,
-
+          h."C_Time" AS last_c_time,
           ROW_NUMBER() OVER (
             PARTITION BY rt.id
             ORDER BY h."C_Date" DESC, h."C_Time" DESC
-          ) AS rn
-
+          ) AS scan_rn
         FROM rescue rt
         INNER JOIN today_scans_only h
           ON (
@@ -618,14 +657,14 @@ app.get("/api/rescue-team", async (req, res) => {
 
       SELECT
         id,
+        l_uid,
         name,
         role,
         dept,
         phone,
         TRUE AS inside
-
       FROM matched_today_scans
-      WHERE rn = 1
+      WHERE scan_rn = 1
         AND last_c_date::date = $1::date
         AND TRIM(COALESCE(last_tid::text, '')) = '1'
         AND (
@@ -651,7 +690,6 @@ app.get("/api/rescue-team", async (req, res) => {
     );
 
     res.set("Cache-Control", "no-store");
-
     res.json(result.rows);
   } catch (err) {
     sendInternalError(res, "Rescue team load", err);
@@ -659,46 +697,200 @@ app.get("/api/rescue-team", async (req, res) => {
 });
 
 app.post("/api/rescue-team", async (req, res) => {
+  let client = null;
+
   try {
     const { name, role, dept, phone, email, timeIn, timeOut, img, lUid } =
-      req.body;
+      req.body || {};
 
-    if (!name || !role) {
+    const normalizedName = String(name || "").trim();
+    const normalizedRole = String(role || "").trim();
+    const normalizedLUid = String(lUid || "").trim() || null;
+
+    if (!normalizedName || !normalizedRole) {
       return res.status(400).json({ error: "name and role are required" });
     }
 
+    if (!normalizedLUid) {
+      return res.status(400).json({
+        error: "A valid personnel L_UID is required",
+        code: "RESCUE_MEMBER_UID_REQUIRED",
+      });
+    }
+
+    const normalizedDept = String(dept || "EMERGENCY").trim() || "EMERGENCY";
+    const normalizedPhone = String(phone || "").trim() || null;
+    const normalizedEmail = String(email || "").trim() || null;
+    const normalizedTimeIn = String(timeIn || "").trim() || null;
+    const normalizedTimeOut = String(timeOut || "").trim() || null;
+    const normalizedImage = img || null;
     const nowManila = getManilaNowSqlString();
 
-    const result = await pool.query(
+    client = await pool.connect();
+    await client.query("BEGIN");
+
+    // Serializes additions of the same personnel UID, including requests
+    // arriving at nearly the same time.
+    await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [
+      `rescue-team:${normalizedLUid}`,
+    ]);
+
+    const existingResult = await client.query(
       `
-  INSERT INTO app.rescue_team (
-    l_uid,
-    name,
-    role,
-    dept,
-    phone,
-    email,
-    time_in,
-    time_out,
-    img,
-    is_active,
-    created_at,
-    updated_at
-  )
-  VALUES (
-    $1,
-    $2,
-    $3,
-    $4,
-    $5,
-    $6,
-    $7,
-    $8,
-    $9,
-    TRUE,
-    $10::timestamp,
-    $10::timestamp
-  )
+      SELECT
+        id,
+        l_uid,
+        name,
+        role,
+        dept,
+        phone,
+        email,
+        time_in,
+        time_out,
+        img,
+        is_active,
+        created_at,
+        updated_at
+      FROM app.rescue_team
+      WHERE TRIM(l_uid) = $1
+      ORDER BY is_active DESC, updated_at DESC NULLS LAST, id DESC
+      FOR UPDATE
+      `,
+      [normalizedLUid],
+    );
+
+    const existingRows = existingResult.rows;
+    const activeMember = existingRows.find((row) => row.is_active === true);
+
+    if (activeMember) {
+      // Remove old duplicate rows for this same UID while retaining the
+      // canonical active member.
+      if (existingRows.length > 1) {
+        await client.query(
+          `
+          DELETE FROM app.rescue_team
+          WHERE TRIM(l_uid) = $1
+            AND id <> $2
+          `,
+          [normalizedLUid, activeMember.id],
+        );
+      }
+
+      await client.query("COMMIT");
+
+      return res.status(409).json({
+        success: false,
+        created: false,
+        reactivated: false,
+        alreadyMember: true,
+        code: "RESCUE_MEMBER_EXISTS",
+        error: "User already in the Rescue team",
+        message: "User already in the Rescue team",
+        member: activeMember,
+      });
+    }
+
+    if (existingRows.length > 0) {
+      const memberToReactivate = existingRows[0];
+
+      const reactivatedResult = await client.query(
+        `
+        UPDATE app.rescue_team
+        SET
+          l_uid = $2,
+          name = $3,
+          role = $4,
+          dept = $5,
+          phone = $6,
+          email = $7,
+          time_in = $8,
+          time_out = $9,
+          img = $10,
+          is_active = TRUE,
+          updated_at = $11::timestamp
+        WHERE id = $1
+        RETURNING
+          id,
+          l_uid,
+          name,
+          role,
+          dept,
+          phone,
+          email,
+          time_in,
+          time_out,
+          img,
+          is_active,
+          created_at,
+          updated_at
+        `,
+        [
+          memberToReactivate.id,
+          normalizedLUid,
+          normalizedName,
+          normalizedRole,
+          normalizedDept,
+          normalizedPhone,
+          normalizedEmail,
+          normalizedTimeIn,
+          normalizedTimeOut,
+          normalizedImage,
+          nowManila,
+        ],
+      );
+
+      // Remove any additional inactive duplicates after reusing one row.
+      await client.query(
+        `
+        DELETE FROM app.rescue_team
+        WHERE TRIM(l_uid) = $1
+          AND id <> $2
+        `,
+        [normalizedLUid, memberToReactivate.id],
+      );
+
+      await client.query("COMMIT");
+
+      return res.status(200).json({
+        success: true,
+        created: false,
+        reactivated: true,
+        alreadyMember: false,
+        message: "User added back to the Rescue team",
+        member: reactivatedResult.rows[0],
+      });
+    }
+
+    const insertResult = await client.query(
+      `
+      INSERT INTO app.rescue_team (
+        l_uid,
+        name,
+        role,
+        dept,
+        phone,
+        email,
+        time_in,
+        time_out,
+        img,
+        is_active,
+        created_at,
+        updated_at
+      )
+      VALUES (
+        $1,
+        $2,
+        $3,
+        $4,
+        $5,
+        $6,
+        $7,
+        $8,
+        $9,
+        TRUE,
+        $10::timestamp,
+        $10::timestamp
+      )
       RETURNING
         id,
         l_uid,
@@ -715,27 +907,51 @@ app.post("/api/rescue-team", async (req, res) => {
         updated_at
       `,
       [
-        lUid ? String(lUid).trim() : null,
-        String(name).trim(),
-        String(role).trim(),
-        dept ? String(dept).trim() : "EMERGENCY",
-        phone ? String(phone).trim() : null,
-        email ? String(email).trim() : null,
-        timeIn ? String(timeIn).trim() : null,
-        timeOut ? String(timeOut).trim() : null,
-        img || null,
+        normalizedLUid,
+        normalizedName,
+        normalizedRole,
+        normalizedDept,
+        normalizedPhone,
+        normalizedEmail,
+        normalizedTimeIn,
+        normalizedTimeOut,
+        normalizedImage,
         nowManila,
       ],
     );
 
-    res.json({
+    await client.query("COMMIT");
+
+    return res.status(201).json({
       success: true,
-      member: result.rows[0],
+      created: true,
+      reactivated: false,
+      alreadyMember: false,
+      message: "User added to the Rescue team",
+      member: insertResult.rows[0],
     });
   } catch (err) {
+    if (client) {
+      await client.query("ROLLBACK").catch(() => {});
+    }
+
+    if (err?.code === "23505") {
+      return res.status(409).json({
+        success: false,
+        created: false,
+        alreadyMember: true,
+        code: "RESCUE_MEMBER_EXISTS",
+        error: "User already in the Rescue team",
+        message: "User already in the Rescue team",
+      });
+    }
+
     sendInternalError(res, "Rescue team creation", err);
+  } finally {
+    client?.release();
   }
 });
+
 app.put("/api/rescue-team/:id", async (req, res) => {
   try {
     const { id } = req.params;
