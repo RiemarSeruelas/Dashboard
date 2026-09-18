@@ -103,6 +103,7 @@ This section is for the person responsible for starting the dashboard computer.
 
 - Docker Desktop
 - Access to the PostgreSQL database used by the application
+- Access to the shared People Accounting REST API
 - The project folder, including `docker-compose.yml`
 - A configured `.env` file
 
@@ -119,8 +120,15 @@ DB_PASSWORD=your_database_password
 PORT=your_app_port
 APP_PORT=your_app_port
 APP_PASSWORD=your_dashboard_passcode
+PEOPLE_API_BASE_URL=http://host.docker.internal:5220/api/v1
+PEOPLE_API_KEY=replace_with_the_key_from_people_accounting_service
+PEOPLE_API_TIMEOUT_MS=10000
 TZ=Asia/Manila
 ```
+
+The Emergency backend uses PostgreSQL only for its own `app.*` session, rescue-team, schedule,
+history, and logging tables. Hikvision personnel reads go through the People Accounting REST API.
+Keep `PEOPLE_API_KEY` in the backend `.env`; never place it in Vite or browser code.
 
 ### Start the Application
 

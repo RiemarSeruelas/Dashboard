@@ -13,6 +13,14 @@ const CACHE_TTL_MS = 10000;
 const { Pool } = pg;
 const app = express();
 const APP_PASSWORD = process.env.APP_PASSWORD?.trim() ?? "";
+const PEOPLE_API_BASE_URL = String(process.env.PEOPLE_API_BASE_URL || "")
+  .trim()
+  .replace(/\/$/, "");
+const PEOPLE_API_KEY = String(process.env.PEOPLE_API_KEY || "").trim();
+const PEOPLE_API_TIMEOUT_MS = Math.max(
+  Number(process.env.PEOPLE_API_TIMEOUT_MS) || 10000,
+  1000,
+);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,6 +39,80 @@ const pool = new Pool({
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 10000,
 });
+
+function assertPeopleApiConfig() {
+  if (!PEOPLE_API_BASE_URL || !PEOPLE_API_KEY) {
+    throw new Error(
+      "PEOPLE_API_BASE_URL and PEOPLE_API_KEY are required for personnel source data",
+    );
+  }
+}
+
+async function peopleApiGet(pathname, query = {}) {
+  assertPeopleApiConfig();
+  const url = new URL(`${PEOPLE_API_BASE_URL}${pathname}`);
+
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== null && value !== "") {
+      url.searchParams.set(key, String(value));
+    }
+  }
+
+  let response;
+  try {
+    response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "X-API-Key": PEOPLE_API_KEY,
+      },
+      signal: AbortSignal.timeout(PEOPLE_API_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw Object.assign(new Error("People Accounting API is unavailable"), {
+      code: error?.name === "TimeoutError" ? "PEOPLE_API_TIMEOUT" : "PEOPLE_API_UNAVAILABLE",
+      cause: error,
+    });
+  }
+
+  if (!response.ok) {
+    throw Object.assign(
+      new Error(`People Accounting API returned HTTP ${response.status}`),
+      { code: `PEOPLE_API_HTTP_${response.status}` },
+    );
+  }
+
+  return response.json();
+}
+
+function mapPeopleEmergencyRow(row) {
+  return {
+    CardNo: row.cardNo ?? null,
+    L_UID: row.uid ?? null,
+    Person: row.person ?? "Unknown",
+    PersonGroup: row.personGroup ?? null,
+    L_Mode: row.mode ?? null,
+    L_TID: row.tid ?? null,
+    C_Date: row.date ?? null,
+    C_Time: row.time ?? null,
+    person_key: row.personKey || buildPersonKey(row.person),
+    scanned_at: row.scannedAt ?? null,
+  };
+}
+
+async function fetchAllEmergencyPopulation(date) {
+  const rows = [];
+  const limit = 5000;
+
+  for (let offset = 0; ; offset += limit) {
+    const page = await peopleApiGet("/emergency/population", {
+      date,
+      limit,
+      offset,
+    });
+    rows.push(...(page.rows || []).map(mapPeopleEmergencyRow));
+    if (!page.hasMore) return { ...page, rows };
+  }
+}
 
 let musteringSyncInFlight = false;
 let lastMusteringSyncAt = 0;
@@ -581,7 +663,7 @@ app.get("/api/rescue-team", async (req, res) => {
       });
     }
 
-    const result = await pool.query(
+    const rescueResult = await pool.query(
       `
       WITH ranked_rescue AS (
         SELECT
@@ -612,85 +694,50 @@ app.get("/api/rescue-team", async (req, res) => {
           phone
         FROM ranked_rescue
         WHERE rescue_rn = 1
-      ),
-
-      today_scans_only AS (
-        SELECT
-          h."L_UID",
-          h."Person",
-          h."L_Mode",
-          h."L_TID",
-          h."C_Date",
-          h."C_Time"
-        FROM "hkvision"."tbhikvision" h
-        WHERE h."C_Date"::date = $1::date
-          AND COALESCE(TRIM(h."Person"), '') <> ''
-      ),
-
-      matched_today_scans AS (
-        SELECT
-          rt.id,
-          rt.l_uid,
-          rt.name,
-          rt.role,
-          rt.dept,
-          rt.phone,
-          h."L_Mode" AS last_mode,
-          h."L_TID" AS last_tid,
-          h."C_Date" AS last_c_date,
-          h."C_Time" AS last_c_time,
-          ROW_NUMBER() OVER (
-            PARTITION BY rt.id
-            ORDER BY h."C_Date" DESC, h."C_Time" DESC
-          ) AS scan_rn
-        FROM rescue rt
-        INNER JOIN today_scans_only h
-          ON (
-            NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NOT NULL
-            AND TRIM(h."L_UID"::text) = TRIM(rt.l_uid::text)
-          )
-          OR (
-            NULLIF(TRIM(COALESCE(rt.l_uid::text, '')), '') IS NULL
-            AND LOWER(TRIM(h."Person")) = LOWER(TRIM(rt.name))
-          )
       )
-
       SELECT
         id,
         l_uid,
         name,
         role,
         dept,
-        phone,
-        TRUE AS inside
-      FROM matched_today_scans
-      WHERE scan_rn = 1
-        AND last_c_date::date = $1::date
-        AND TRIM(COALESCE(last_tid::text, '')) = '1'
-        AND (
-          LOWER(TRIM(last_mode)) IN (
-            'flane 1 entrance',
-            'flane 2 entrance'
-          )
-          OR LOWER(TRIM(last_mode)) LIKE '%mustering%'
-        )
-        AND (
-          $2::text = ''
-          OR LOWER(name) LIKE LOWER('%' || $2::text || '%')
-          OR LOWER(role) LIKE LOWER('%' || $2::text || '%')
-          OR LOWER(dept) LIKE LOWER('%' || $2::text || '%')
-        )
-        AND (
-          $3::text = 'ALL'
-          OR dept = $3::text
-        )
+        phone
+      FROM rescue
       ORDER BY name ASC
       `,
-      [targetDate, search, dept],
     );
 
+    const population = await fetchAllEmergencyPopulation(targetDate);
+    const insideUids = new Set(
+      population.rows
+        .map((row) => String(row.L_UID || "").trim())
+        .filter(Boolean),
+    );
+    const insideNames = new Set(
+      population.rows
+        .map((row) => String(row.Person || "").trim().toLowerCase())
+        .filter(Boolean),
+    );
+    const searchText = search.toLowerCase();
+
+    const rows = rescueResult.rows
+      .filter((member) => {
+        const uid = String(member.l_uid || "").trim();
+        const isInside = uid
+          ? insideUids.has(uid)
+          : insideNames.has(String(member.name || "").trim().toLowerCase());
+        const matchesSearch =
+          !searchText ||
+          [member.name, member.role, member.dept].some((value) =>
+            String(value || "").toLowerCase().includes(searchText),
+          );
+        const matchesDept = dept === "ALL" || member.dept === dept;
+        return isInside && matchesSearch && matchesDept;
+      })
+      .map((member) => ({ ...member, inside: true }));
+
     res.set("Cache-Control", "no-store");
-    res.json(result.rows);
+    res.json(rows);
   } catch (err) {
     sendInternalError(res, "Rescue team load", err);
   }
@@ -1061,24 +1108,6 @@ app.delete("/api/rescue-team/:id", async (req, res) => {
   }
 });
 
-// IMPORTANT FIX:
-// This signature checks all latest events today, not only IN records.
-// So when a person exits, the cache is invalidated.
-async function getLatestNormalDbSignature(targetDate) {
-  const result = await pool.query(
-    `
-    SELECT
-      COALESCE(MAX(("C_Date"::text || ' ' || "C_Time"::text)), '') AS latest_signature
-    FROM "hkvision"."tbhikvision"
-    WHERE "C_Date"::date = $1::date
-      AND COALESCE(TRIM("Person"), '') <> ''
-    `,
-    [targetDate],
-  );
-
-  return result.rows[0]?.latest_signature || "";
-}
-
 // --------------------------------------------
 // NORMAL MODE: paginated live entrance population
 // --------------------------------------------
@@ -1098,7 +1127,14 @@ app.get("/api/hikvision-normal", async (req, res) => {
       limit,
     });
 
-    const latestDbSignature = await getLatestNormalDbSignature(targetDate);
+    const peoplePayload = await peopleApiGet("/emergency/population", {
+      date: targetDate,
+      search,
+      personGroup: dept && dept !== "ALL" ? dept : "",
+      limit,
+      offset,
+    });
+    const latestDbSignature = peoplePayload.latestSignature || "";
 
     const cachedPayload = getCachedNormalPayload(cacheKey, latestDbSignature);
     if (cachedPayload) {
@@ -1109,105 +1145,21 @@ app.get("/api/hikvision-normal", async (req, res) => {
       });
     }
 
-    // IMPORTANT FIX:
-    // Get the latest record per person first.
-    // Then only show people whose latest status is IN.
-    // This prevents people from staying visible after they exit.
-    const rawResult = await pool.query(
-      `
-      WITH latest AS (
-        SELECT
-          "CardNo",
-          "L_UID",
-          "Person",
-          "PersonGroup",
-          "L_Mode",
-          "L_TID",
-          "C_Date",
-          "C_Time",
-          ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
-            ORDER BY "C_Date" DESC, "C_Time" DESC
-          ) AS rn
-        FROM "hkvision"."tbhikvision"
-        WHERE "C_Date"::date = $1::date
-          AND COALESCE(TRIM("Person"), '') <> ''
-      )
-      SELECT
-        "CardNo",
-        "L_UID",
-        "Person",
-        "PersonGroup",
-        "L_Mode",
-        "L_TID",
-        "C_Date",
-        "C_Time"
-      FROM latest
-      WHERE rn = 1
-        AND TRIM(COALESCE("L_TID"::text, '')) = '1'
-        AND (
-          LOWER(TRIM("L_Mode")) IN (
-            'flane 1 entrance',
-            'flane 2 entrance'
-          )
-          OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
-        )
-      ORDER BY "C_Time" DESC
-      `,
-      [targetDate],
-    );
-
-    const allRows = dedupeRowsByCanonicalName(rawResult.rows);
-    const summary = { total: allRows.length };
-    const departments = [
-      ...new Set(
-        allRows
-          .map((row) => String(row?.PersonGroup || "").trim())
-          .filter(Boolean),
-      ),
-    ].sort((a, b) => a.localeCompare(b));
-
-    let rows = allRows;
-
-    if (search) {
-      rows = rows.filter((row) => {
-        return (
-          searchMatchesName(row?.Person, search) ||
-          String(row?.PersonGroup || "")
-            .toLowerCase()
-            .includes(search.toLowerCase()) ||
-          String(row?.L_Mode || "")
-            .toLowerCase()
-            .includes(search.toLowerCase())
-        );
-      });
-    }
-
-    if (dept && dept !== "ALL") {
-      rows = rows.filter((row) => String(row?.PersonGroup || "") === dept);
-    }
-
-    rows.sort((a, b) =>
-      String(a?.Person || "").localeCompare(String(b?.Person || "")),
-    );
-
-    const total = rows.length;
-    const pagedRows = rows.slice(offset, offset + limit);
     const payload = {
-      rows: pagedRows,
-      total,
-      summary,
-      departments,
-      limit,
-      offset,
-      hasMore: offset + pagedRows.length < total,
+      rows: (peoplePayload.rows || []).map(mapPeopleEmergencyRow),
+      total: peoplePayload.total || 0,
+      summary: peoplePayload.summary || { total: 0 },
+      departments: peoplePayload.departments || [],
+      limit: peoplePayload.limit ?? limit,
+      offset: peoplePayload.offset ?? offset,
+      hasMore: Boolean(peoplePayload.hasMore),
     };
 
     setCachedNormalPayload(cacheKey, payload, latestDbSignature);
 
     res.json({
       ...payload,
-      source: "database",
+      source: "people-api",
       latestDbSignature,
     });
   } catch (err) {
@@ -1222,49 +1174,8 @@ async function snapshotCurrentPersonnelToSession(sessionId) {
   const todayManila = getTodayManila();
   const snapshotNow = getManilaNowSqlString();
 
-  const rawResult = await pool.query(
-    `
-    WITH latest AS (
-      SELECT
-        "L_UID",
-        "Person",
-        "PersonGroup",
-        "L_Mode",
-        "L_TID",
-        "C_Date",
-        "C_Time",
-        ROW_NUMBER() OVER (
-          PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
-          ORDER BY "C_Date" DESC, "C_Time" DESC
-        ) AS rn
-      FROM "hkvision"."tbhikvision"
-      WHERE "C_Date"::date = $1::date
-        AND COALESCE(TRIM("Person"), '') <> ''
-    )
-    SELECT
-      "L_UID",
-      "Person",
-      "PersonGroup",
-      "L_Mode",
-      "L_TID",
-      "C_Date",
-      "C_Time"
-    FROM latest
-    WHERE rn = 1
-      AND TRIM(COALESCE("L_TID"::text, '')) = '1'
-      AND (
-        LOWER(TRIM("L_Mode")) IN (
-          'flane 1 entrance',
-          'flane 2 entrance'
-        )
-        OR LOWER(TRIM("L_Mode")) LIKE '%mustering%'
-      )
-    ORDER BY "C_Time" DESC
-    `,
-    [todayManila],
-  );
-
-  const dedupedRows = dedupeRowsByCanonicalName(rawResult.rows);
+  const population = await fetchAllEmergencyPopulation(todayManila);
+  const dedupedRows = dedupeRowsByCanonicalName(population.rows);
   let insertedCount = 0;
 
   for (const row of dedupedRows) {
@@ -2246,57 +2157,17 @@ async function syncMusteringScansToActiveSession() {
   const scanWindowStart = getManilaNowSqlString(
     new Date(Date.now() - 5 * 60 * 1000),
   );
-
-  const musterResult = await pool.query(
-    `
-    WITH active_window AS (
-      SELECT
-        GREATEST(started_at, $1::timestamp) AS window_start,
-        $2::timestamp AS window_end
-      FROM app.emergency_sessions
-      WHERE id = $3
-        AND is_active = TRUE
-    ),
-    latest_window_scan AS (
-      SELECT
-        "L_UID",
-        "Person",
-        "PersonGroup",
-        "L_Mode",
-        "L_TID",
-        "C_Date",
-        "C_Time",
-        ("C_Date"::date + "C_Time"::time) AS scanned_at,
-        ROW_NUMBER() OVER (
-          PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), TRIM("Person"))
-          ORDER BY "C_Date" DESC, "C_Time" DESC
-        ) AS rn
-      FROM "hkvision"."tbhikvision"
-      CROSS JOIN active_window
-      WHERE "C_Date"::date BETWEEN $1::timestamp::date AND $2::timestamp::date
-        AND COALESCE(TRIM("Person"), '') <> ''
-        AND ("C_Date"::date + "C_Time"::time) BETWEEN
-          active_window.window_start AND active_window.window_end
-        AND TRIM(COALESCE("L_TID"::text, '')) = '1'
-        AND LOWER(TRIM("L_Mode")) LIKE '%mustering%'
-    )
-    SELECT
-      "L_UID",
-      "Person",
-      "PersonGroup",
-      "L_Mode",
-      "L_TID",
-      "C_Date",
-      "C_Time",
-      to_char(scanned_at, 'YYYY-MM-DD HH24:MI:SS') AS scanned_at
-    FROM latest_window_scan
-    WHERE rn = 1
-    ORDER BY scanned_at DESC
-    `,
-    [scanWindowStart, scanWindowEnd, session.id],
+  const sessionStartedAt = getManilaNowSqlString(session.started_at);
+  const activeWindowStart =
+    sessionStartedAt > scanWindowStart ? sessionStartedAt : scanWindowStart;
+  const musterPayload = await peopleApiGet("/emergency/mustering", {
+    from: activeWindowStart,
+    to: scanWindowEnd,
+    limit: 5000,
+  });
+  const dedupedRows = dedupeRowsByCanonicalName(
+    (musterPayload.rows || []).map(mapPeopleEmergencyRow),
   );
-
-  const dedupedRows = dedupeRowsByCanonicalName(musterResult.rows);
 
   let insertedCount = 0;
   let updatedCount = 0;
@@ -2500,39 +2371,17 @@ app.get("/api/personnel-search", async (req, res) => {
       return res.json([]);
     }
 
-    const result = await pool.query(
-      `
-      WITH matched AS (
-        SELECT
-          "L_UID",
-          "Person",
-          "PersonGroup",
-          "C_Date",
-          "C_Time",
-          ROW_NUMBER() OVER (
-            PARTITION BY COALESCE(NULLIF(TRIM("L_UID"), ''), LOWER(TRIM("Person")))
-            ORDER BY "C_Date" DESC, "C_Time" DESC
-          ) AS rn
-        FROM "hkvision"."tbhikvision"
-        WHERE COALESCE(TRIM("Person"), '') <> ''
-          AND (
-            LOWER("Person") LIKE LOWER('%' || $1::text || '%')
-            OR LOWER("PersonGroup") LIKE LOWER('%' || $1::text || '%')
-          )
-      )
-      SELECT
-        "L_UID",
-        "Person",
-        "PersonGroup"
-      FROM matched
-      WHERE rn = 1
-      ORDER BY "Person" ASC
-      LIMIT 30
-      `,
-      [search],
+    const payload = await peopleApiGet("/emergency/personnel", {
+      search,
+      limit: 30,
+    });
+    res.json(
+      (payload.people || []).map((person) => ({
+        L_UID: person.uid ?? null,
+        Person: person.person ?? "Unknown",
+        PersonGroup: person.personGroup ?? null,
+      })),
     );
-
-    res.json(result.rows);
   } catch (err) {
     sendInternalError(res, "Personnel search", err);
   }
@@ -2557,11 +2406,12 @@ app.use((req, res, next) => {
 // --------------------------------------------
 async function startServer() {
   try {
+    assertPeopleApiConfig();
     await initDb();
     await recoverInterruptedEmergencySchedules();
     console.log("✅ DB INIT COMPLETE");
   } catch (err) {
-    logServerError("Database initialization", err);
+    logServerError("Startup initialization", err);
     process.exitCode = 1;
     return;
   }
